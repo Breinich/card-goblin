@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@monaco-editor/react": "^4.6.0",
+    "@vercel/analytics": "^2.0.1",
     "aws4fetch": "^1.0.20",
     "next": "^15.5.22",
     "pdf-lib": "^1.17.1",
