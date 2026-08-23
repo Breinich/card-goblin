@@ -247,15 +247,50 @@ function bucketUrl(config: R2Config): string {
 }
 
 type R2Operation = CloudStorageError["operation"];
+export const R2_REQUEST_TIMEOUT_MS = 10_000;
 
-async function r2Fetch(operation: R2Operation, key: string, request: () => Promise<Response>): Promise<Response> {
+async function r2Request<T>(
+  operation: R2Operation,
+  key: string,
+  request: (signal: AbortSignal) => Promise<Response>,
+  consume: (response: Response) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  let timedOut = false;
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timeoutId = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+      reject(new CloudStorageError(`R2 ${operation} ${key} request timed out`, {
+        operation,
+        code: "RequestTimeout",
+      }));
+    }, R2_REQUEST_TIMEOUT_MS);
+  });
   try {
-    return await request();
-  } catch {
+    return await Promise.race([
+      (async () => consume(await request(controller.signal)))(),
+      timeout,
+    ]);
+  } catch (error) {
+    // Abort listeners can reject the fetch synchronously before the timeout
+    // promise's rejection wins Promise.race. Preserve the actual cause.
+    if (timedOut) {
+      throw new CloudStorageError(`R2 ${operation} ${key} request timed out`, {
+        operation,
+        code: "RequestTimeout",
+      });
+    }
+    if (error instanceof CloudStorageError || error instanceof CloudConditionalWriteError) {
+      throw error;
+    }
     throw new CloudStorageError(`R2 ${operation} ${key} request failed`, {
       operation,
       code: "RequestFailed",
     });
+  } finally {
+    if (timeoutId !== null) clearTimeout(timeoutId);
   }
 }
 
@@ -363,30 +398,31 @@ export function createR2Storage(config: R2Config): CloudStorage {
     }
     if (request.maxKeys !== undefined) url.searchParams.set("max-keys", String(request.maxKeys));
 
-    const res = await r2Fetch("LIST", request.prefix, () =>
-      client.fetch(url.toString(), { method: "GET", cache: "no-store" }),
-    );
-    if (!res.ok) throw await storageResponseError("LIST", request.prefix, res);
-    const xml = await res.text();
-    const parsed = parseListObjectsPageXml(xml);
-    // An R2 response that says it is truncated but omits its continuation
-    // token would otherwise make any convenience loop silently stop at 1000.
-    if (
-      parsed.nextContinuationToken === null &&
-      /<IsTruncated>\s*true\s*<\/IsTruncated>/i.test(xml)
-    ) {
-      throw new CloudStorageError("R2 LIST returned a truncated page without a token", {
-        operation: "LIST",
-        status: res.status,
-        code: "MissingContinuationToken",
-      });
-    }
-    return parsed;
+    return r2Request("LIST", request.prefix, (signal) =>
+      client.fetch(url.toString(), { method: "GET", cache: "no-store", signal }),
+    async (res) => {
+      if (!res.ok) throw await storageResponseError("LIST", request.prefix, res);
+      const xml = await res.text();
+      const parsed = parseListObjectsPageXml(xml);
+      // An R2 response that says it is truncated but omits its continuation
+      // token would otherwise make any convenience loop silently stop at 1000.
+      if (
+        parsed.nextContinuationToken === null &&
+        /<IsTruncated>\s*true\s*<\/IsTruncated>/i.test(xml)
+      ) {
+        throw new CloudStorageError("R2 LIST returned a truncated page without a token", {
+          operation: "LIST",
+          status: res.status,
+          code: "MissingContinuationToken",
+        });
+      }
+      return parsed;
+    });
   }
 
   return {
     async getObject(key) {
-      const res = await r2Fetch("GET", key, () =>
+      return r2Request("GET", key, (signal) =>
         client.fetch(objectUrl(config, key), {
           method: "GET",
           // This read participates in compare-and-swap. It must observe R2,
@@ -402,38 +438,40 @@ export function createR2Storage(config: R2Config): CloudStorage {
             // both would weaken the concurrent-write guard.
             "accept-encoding": "identity",
           },
+          signal,
         }),
-      );
-      if (res.status === 404) {
-        const code = await r2ErrorCode(res);
-        // R2 normally answers an absent object with NoSuchKey. A blank 404
-        // is tolerated for compatibility, but NoSuchBucket must not masquerade
-        // as "this project has never synced" and trigger a doomed first PUT.
-        if (code === null || code === "NoSuchKey") return null;
-        throw new CloudStorageError(`R2 GET ${key} failed: 404 ${code}`, {
-          operation: "GET",
-          status: 404,
-          code,
-        });
-      }
-      if (!res.ok) throw await storageResponseError("GET", key, res);
-      const etag = res.headers.get("etag");
-      if (etag === null || etag === "" || etag.startsWith("W/")) {
-        // Fail closed. Removing W/ would manufacture a strong validator from
-        // a weak one; continuing without a validator would make the next PUT
-        // unconditional. Both would compromise the storage-level race guard.
-        throw new CloudStorageError(`R2 GET ${key} returned no strong ETag`, {
-          operation: "GET",
-          status: res.status,
-          code: etag?.startsWith("W/") ? "WeakETag" : "MissingETag",
-        });
-      }
-      const bytes = new Uint8Array(await res.arrayBuffer());
-      return {
-        bytes,
-        etag,
-        mime: res.headers.get("content-type") ?? "application/octet-stream",
-      };
+      async (res) => {
+        if (res.status === 404) {
+          const code = await r2ErrorCode(res);
+          // R2 normally answers an absent object with NoSuchKey. A blank 404
+          // is tolerated for compatibility, but NoSuchBucket must not masquerade
+          // as "this project has never synced" and trigger a doomed first PUT.
+          if (code === null || code === "NoSuchKey") return null;
+          throw new CloudStorageError(`R2 GET ${key} failed: 404 ${code}`, {
+            operation: "GET",
+            status: 404,
+            code,
+          });
+        }
+        if (!res.ok) throw await storageResponseError("GET", key, res);
+        const etag = res.headers.get("etag");
+        if (etag === null || etag === "" || etag.startsWith("W/")) {
+          // Fail closed. Removing W/ would manufacture a strong validator from
+          // a weak one; continuing without a validator would make the next PUT
+          // unconditional. Both would compromise the storage-level race guard.
+          throw new CloudStorageError(`R2 GET ${key} returned no strong ETag`, {
+            operation: "GET",
+            status: res.status,
+            code: etag?.startsWith("W/") ? "WeakETag" : "MissingETag",
+          });
+        }
+        const bytes = new Uint8Array(await res.arrayBuffer());
+        return {
+          bytes,
+          etag,
+          mime: res.headers.get("content-type") ?? "application/octet-stream",
+        };
+      });
     },
 
     async putObject(key, bytes, mime, ifMatch) {
@@ -445,24 +483,29 @@ export function createR2Storage(config: R2Config): CloudStorage {
       };
       if (ifMatch === "") headers["if-none-match"] = "*";
       else if (ifMatch !== undefined) headers["if-match"] = ifMatch;
-      const res = await r2Fetch("PUT", key, () =>
+      return r2Request("PUT", key, (signal) =>
         client.fetch(objectUrl(config, key), {
           method: "PUT",
           headers,
           body: bytes as BodyInit,
+          signal,
         }),
-      );
-      if (res.status === 412 || res.status === 409) throw new CloudConditionalWriteError();
-      if (!res.ok) throw await storageResponseError("PUT", key, res);
-      return { etag: res.headers.get("etag") ?? "" };
+      async (res) => {
+        if (res.status === 412 || res.status === 409) throw new CloudConditionalWriteError();
+        if (!res.ok) throw await storageResponseError("PUT", key, res);
+        return { etag: res.headers.get("etag") ?? "" };
+      });
     },
 
     async deleteObject(key) {
-      const res = await r2Fetch("DELETE", key, () => client.fetch(objectUrl(config, key), { method: "DELETE" }));
-      // Idempotent (interface doc): a 404 here still counts as "deleted".
-      if (!res.ok && res.status !== 404) {
-        throw await storageResponseError("DELETE", key, res);
-      }
+      return r2Request("DELETE", key, (signal) =>
+        client.fetch(objectUrl(config, key), { method: "DELETE", signal }),
+      async (res) => {
+        // Idempotent (interface doc): a 404 here still counts as "deleted".
+        if (!res.ok && res.status !== 404) {
+          throw await storageResponseError("DELETE", key, res);
+        }
+      });
     },
 
     async presignPut(key, mime, size, ttlSeconds, options) {

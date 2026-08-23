@@ -18,11 +18,13 @@ import {
   loadR2ConfigFromEnv,
   parseListObjectsXml,
   parseListObjectsPageXml,
+  R2_REQUEST_TIMEOUT_MS,
   resetCloudStorageForTests,
   setCloudStorageForTests,
 } from "../r2";
 
 afterEach(() => {
+  vi.useRealTimers();
   resetCloudStorageForTests();
   vi.unstubAllGlobals();
 });
@@ -327,6 +329,40 @@ describe("createR2Storage — presigned URL signing (L4)", () => {
 
 describe("createR2Storage — server-side request shape and diagnostics", () => {
   const config = { accountId: "acct", accessKeyId: "AKIAFAKE", secretAccessKey: "fakesecret", bucket: "bucket" };
+
+  it("turns a hung R2 request into a bounded retryable storage error", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) =>
+      new Promise<Response>((_resolve, reject) => {
+        const request = input instanceof Request ? input : new Request(input);
+        request.signal.addEventListener("abort", () => reject(new Error("aborted")));
+      })));
+    const pending = createR2Storage(config).getObject("projects/default/project.json");
+    const rejected = expect(pending).rejects.toMatchObject({
+      name: "CloudStorageError",
+      operation: "GET",
+      code: "RequestTimeout",
+    });
+    await vi.advanceTimersByTimeAsync(R2_REQUEST_TIMEOUT_MS);
+    await rejected;
+  });
+
+  it("also bounds an R2 response whose headers arrive but body stalls", async () => {
+    vi.useFakeTimers();
+    const body = new ReadableStream<Uint8Array>({ start() {} });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(body, {
+      status: 200,
+      headers: { etag: '"stored-object-etag"', "content-type": "application/json" },
+    })));
+    const pending = createR2Storage(config).getObject("projects/default/project.json");
+    const rejected = expect(pending).rejects.toMatchObject({
+      name: "CloudStorageError",
+      operation: "GET",
+      code: "RequestTimeout",
+    });
+    await vi.advanceTimersByTimeAsync(R2_REQUEST_TIMEOUT_MS);
+    await rejected;
+  });
 
   it("GET requests identity encoding and carries the returned strong ETag unchanged into If-Match", async () => {
     const seen: Request[] = [];

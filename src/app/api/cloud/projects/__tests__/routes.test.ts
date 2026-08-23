@@ -25,6 +25,7 @@ import {
   type StoredNamedCloudProject,
 } from "@/lib/cloud/namedProjectPayload";
 import { serializeStoredCloudProject } from "@/lib/cloud/projectPayload";
+import { createProjectAssetVerificationReceipt } from "@/lib/cloud/projectAssetReceipt";
 
 const BASE = "http://localhost:3000";
 const SESSION_SECRET = "named-project-route-test-secret-32bytes";
@@ -446,6 +447,48 @@ describe("GET/PUT /api/cloud/projects/:projectId", () => {
     expect(stored.createdAt).toBe("1970-01-01T00:00:00.000Z");
     expect(stored.creationTokenHash).toMatch(/^[0-9a-f]{64}$/);
     expect(stored.creationFingerprint).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("upgrades a 100+ asset legacy project from receipts without rereading every object", async () => {
+    const assets = Array.from({ length: 125 }, (_unused, index) => ({
+      name: `asset_${index}`,
+      mime: "image/png",
+      size: 3,
+      hash: createHash("sha256").update(`asset-${index}`).digest("hex"),
+    }));
+    await storage.putObject(
+      cloudProjectKey("default"),
+      serializeStoredCloudProject({ revision: 9, code: "legacy", sheets: {}, assets }),
+      "application/json",
+    );
+    const real = storage;
+    const getObject = vi.fn(real.getObject.bind(real));
+    storage = { ...real, getObject };
+    setCloudStorageForTests(storage);
+    const assetVerification = assets.map((asset) => ({
+      name: asset.name,
+      receipt: createProjectAssetVerificationReceipt(
+        SESSION_SECRET,
+        "default",
+        asset,
+      ),
+    }));
+
+    const response = await projectPut(
+      request("/api/cloud/projects/default", {
+        method: "PUT",
+        signedIn: true,
+        body: {
+          baseRevision: 9,
+          project: content("Large legacy deck", "legacy", { assets }),
+          assetVerification,
+        },
+      }),
+      context("default"),
+    );
+
+    expect(response.status).toBe(200);
+    expect(getObject).toHaveBeenCalledTimes(1); // the project manifest only
   });
 
   it("rejects invalid IDs, stale revisions, missing objects, and malformed payloads", async () => {

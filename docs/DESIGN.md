@@ -1628,6 +1628,14 @@ section is the normative decision summary for ◆53.
   lazily migrated as a legacy cloud project, never orphaned. Browser content,
   cloud caches, and IndexedDB assets are likewise project-scoped so switching
   cannot leak assets or late writes.
+- Asset integrity does not make a manifest update scale with the project's total
+  byte count. The server signs a short-lived project/name/MIME/size/hash receipt
+  only after its post-upload R2 readback succeeds; receipts are request sidecars,
+  never persisted project data. A write trusts exact entries from the current
+  already-verified v2 manifest, requires receipts for new/changed entries, and uses
+  bounded-concurrency byte verification only as a legacy-client fallback. Browser
+  migration transfers are likewise bounded, and later asset edits locally hash the
+  library so only changed bytes upload.
 - **Project-file portability is the release blocker.** All current v1 and v2
   exports import forever, with code, sheet state, orphaned cells, MIME metadata,
   and asset bytes preserved; an optional project name is preserved when present

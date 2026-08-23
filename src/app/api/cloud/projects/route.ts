@@ -1,7 +1,7 @@
 /** Authenticated named-project collection: complete listing + idempotent create. */
 import { createHash } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
-import { requireSession } from "@/lib/cloud/auth";
+import { loadSessionEnvFromProcess, requireSession } from "@/lib/cloud/auth";
 import {
   CLOUD_UNCONFIGURED_MESSAGE,
   CloudConditionalWriteError,
@@ -29,8 +29,11 @@ import {
   type UnreadableCloudProjectSummary,
 } from "@/lib/cloud/namedProjectPayload";
 import { verifyProjectAssetObjects } from "@/lib/cloud/projectAssetVerification";
+import { parseAssetVerificationSubmissions } from "@/lib/cloud/namedProjectAsset";
+import { assetsRequiringObjectVerification } from "@/lib/cloud/projectAssetReceipt";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 const NO_STORE_HEADERS = {
   "Cache-Control": "private, no-store, max-age=0",
@@ -179,10 +182,21 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
   const project = parseNamedCloudProjectContent(record.project);
   if (project === null) return json({ error: "Invalid project payload." }, 400);
+  const assetVerification = parseAssetVerificationSubmissions(record.assetVerification);
+  if (assetVerification === null) return json({ error: "Malformed request." }, 400);
 
   const id = record.id;
+  const sessionEnv = loadSessionEnvFromProcess();
+  if (sessionEnv === null) return json({ error: CLOUD_UNCONFIGURED_MESSAGE }, 503);
+  const assetsToVerify = assetsRequiringObjectVerification(
+    sessionEnv.sessionSecret,
+    id,
+    project.assets,
+    assetVerification,
+  );
+  if (assetsToVerify === null) return json({ error: "Malformed request." }, 400);
   try {
-    const verification = await verifyProjectAssetObjects(storage, id, project.assets);
+    const verification = await verifyProjectAssetObjects(storage, id, assetsToVerify);
     if (!verification.ok) {
       return json({ error: "asset-verification-failed", assets: verification.assets }, 409);
     }

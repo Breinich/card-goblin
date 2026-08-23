@@ -81,6 +81,7 @@ import type {
   PublicNamedCloudProject,
 } from "@/lib/cloud/namedProjectPayload";
 import type { CloudAssetManifestEntry } from "@/lib/cloud/projectPayload";
+import type { AssetVerificationSubmission } from "@/lib/cloud/namedProjectAsset";
 import {
   ADMIN_AUTH_EVENT_CHANNEL,
   ADMIN_AUTH_EVENT_STORAGE_KEY,
@@ -93,6 +94,7 @@ import {
 } from "@/app/editor/_store/namedProjectSync";
 
 export const PROJECT_AUTOSAVE_DEBOUNCE_MS = 1000;
+export const PROJECT_ASSET_TRANSFER_CONCURRENCY = 8;
 
 export interface ProjectOpenConflict {
   projectId: string;
@@ -118,6 +120,12 @@ interface PendingCloudOpen {
   remoteAssets: StoredAsset[];
   cached: ProjectRecord;
   cachedAssets: StoredAsset[];
+  remoteAssetVerification?: readonly AssetVerificationSubmission[];
+}
+
+interface PreparedCloudAssets {
+  assets: CloudAssetManifestEntry[];
+  assetVerification: AssetVerificationSubmission[];
 }
 
 interface PendingCloudCreate {
@@ -140,6 +148,7 @@ export interface ProjectActivation {
   session: ProjectRecordSession;
   assets: readonly StoredAsset[];
   cloudManifest?: readonly CloudAssetManifestEntry[];
+  assetVerification?: readonly AssetVerificationSubmission[];
   starterId?: StarterProjectId;
 }
 
@@ -162,6 +171,7 @@ export interface ProjectBootstrapDependencies {
     id: string,
     baseRevision: number,
     project: NamedCloudProjectContent,
+    assetVerification?: readonly AssetVerificationSubmission[],
   ): Promise<{ revision: number; updatedAt: string }>;
   uploadCloudAsset(
     projectId: string,
@@ -207,6 +217,27 @@ function cloneAsset(asset: StoredAsset): StoredAsset {
     mime: asset.mime,
     bytes: asset.bytes instanceof Blob ? asset.bytes : asset.bytes.slice(),
   };
+}
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  task: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workers = Array.from(
+    { length: Math.min(concurrency, items.length) },
+    async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        results[index] = await task(items[index]!, index);
+      }
+    },
+  );
+  await Promise.all(workers);
+  return results;
 }
 
 /** Write-before-delete and full readback. A failure leaves an inactive,
@@ -317,6 +348,7 @@ export function createProjectBootstrapController(
     records: readonly StoredAsset[],
     cloudManifest?: readonly CloudAssetManifestEntry[],
     starterId?: StarterProjectId,
+    assetVerification?: readonly AssetVerificationSubmission[],
   ): void => {
     if (activeSession !== null || editorUnsubscribe !== null) {
       throw new Error("The outgoing project session was not detached.");
@@ -334,6 +366,7 @@ export function createProjectBootstrapController(
       assets: records,
       ...(cloudManifest === undefined ? {} : { cloudManifest }),
       ...(starterId === undefined ? {} : { starterId }),
+      ...(assetVerification === undefined ? {} : { assetVerification }),
     });
   };
 
@@ -359,6 +392,7 @@ export function createProjectBootstrapController(
     pointerAlreadyActive = false,
     cloudManifest?: readonly CloudAssetManifestEntry[],
     starterId?: StarterProjectId,
+    assetVerification?: readonly AssetVerificationSubmission[],
   ): Promise<boolean> => {
     if (!isCurrentOpenOperation(operation)) return false;
     const adapter = deps.projectAssetFactory(record.id);
@@ -408,7 +442,7 @@ export function createProjectBootstrapController(
     deps.detachBeforeActivate?.();
     deps.bindAssets(record.id, verifiedAssets);
     deps.editor.getState().replaceProject(record.seed);
-    attachLocalSession(record, verifiedAssets, cloudManifest, starterId);
+    attachLocalSession(record, verifiedAssets, cloudManifest, starterId, assetVerification);
     if (record.location === "browser") {
       recovery = {
         kind: "current",
@@ -495,13 +529,16 @@ export function createProjectBootstrapController(
   };
 
   const downloadCloudAssets = async (project: PublicNamedCloudProject): Promise<StoredAsset[]> =>
-    Promise.all(project.assets.map((entry) =>
-      deps.downloadCloudAsset(project.id, entry, project.legacy)));
+    mapWithConcurrency(
+      project.assets,
+      PROJECT_ASSET_TRANSFER_CONCURRENCY,
+      (entry) => deps.downloadCloudAsset(project.id, entry, project.legacy),
+    );
 
   const manifestForAssets = async (
     projectId: string,
     records: readonly StoredAsset[],
-  ): Promise<NamedCloudProjectContent["assets"]> => {
+  ): Promise<PreparedCloudAssets> => {
     const errors = cloudAssetCompatibilityErrors(records);
     if (errors.length > 0) {
       throw new ProjectCloudClientError(
@@ -509,14 +546,23 @@ export function createProjectBootstrapController(
         `These assets cannot sync to cloud: ${errors.join("; ")}.`,
       );
     }
-    return Promise.all(records.map((record) => deps.uploadCloudAsset(projectId, record)));
+    const uploaded = await mapWithConcurrency(
+      records,
+      PROJECT_ASSET_TRANSFER_CONCURRENCY,
+      (record) => deps.uploadCloudAsset(projectId, record),
+    );
+    return {
+      assets: uploaded.map(({ name, mime, size, hash }) => ({ name, mime, size, hash })),
+      assetVerification: uploaded.flatMap(({ name, verificationReceipt }) =>
+        verificationReceipt === undefined ? [] : [{ name, receipt: verificationReceipt }]),
+    };
   };
 
   const createCloudAndActivate = async (
     operation: number,
     pending: PendingCloudCreate,
   ): Promise<void> => {
-    const assets = await manifestForAssets(pending.id, pending.assets);
+    const prepared = await manifestForAssets(pending.id, pending.assets);
     if (!isCurrentOpenOperation(operation)) return;
     const created = await deps.createCloud({
       id: pending.id,
@@ -526,8 +572,11 @@ export function createProjectBootstrapController(
         ...(pending.starterId === undefined ? {} : { starterId: pending.starterId }),
         code: pending.seed.code,
         sheets: pending.seed.sheets,
-        assets,
+        assets: prepared.assets,
       },
+      ...(prepared.assetVerification.length === 0
+        ? {}
+        : { assetVerification: prepared.assetVerification }),
     });
     if (!isCurrentOpenOperation(operation)) return;
     // A separate read closes the "successful response but wrong object"
@@ -704,12 +753,14 @@ export function createProjectBootstrapController(
       try {
         const remote = await deps.getCloud(summary.id);
         const remoteAssets = await downloadCloudAssets(remote);
+        let remoteAssetVerification: readonly AssetVerificationSubmission[] | undefined;
         // The deployed `default` project names asset objects by logical name.
         // Copy and verify every byte under its immutable hash key before any
         // later revision write can upgrade the manifest to v2. The old objects
         // remain untouched and recoverable.
         if (remote.legacy && cloudAssetCompatibilityErrors(remoteAssets).length === 0) {
-          await manifestForAssets(remote.id, remoteAssets);
+          remoteAssetVerification = (await manifestForAssets(remote.id, remoteAssets))
+            .assetVerification;
         }
         if (!isCurrentOpenOperation(operation)) return;
         const cached = readProjectRecord(deps.storage, { location: "cloud", id: remote.id });
@@ -720,7 +771,14 @@ export function createProjectBootstrapController(
             !(await assetLibrariesEqual(cachedAssets, remoteAssets));
           if (differs) {
             if (!isCurrentOpenOperation(operation)) return;
-            pendingCloudOpen = { operation, remote, remoteAssets, cached, cachedAssets };
+            pendingCloudOpen = {
+              operation,
+              remote,
+              remoteAssets,
+              cached,
+              cachedAssets,
+              ...(remoteAssetVerification === undefined ? {} : { remoteAssetVerification }),
+            };
             publish({
               ...snapshot,
               conflict: {
@@ -742,7 +800,7 @@ export function createProjectBootstrapController(
           name: remote.name,
           revision: remote.revision,
           seed: { code: remote.code, sheets: remote.sheets },
-        }, remoteAssets, false, remote.assets, remote.starterId);
+        }, remoteAssets, false, remote.assets, remote.starterId, remoteAssetVerification);
       } catch (error) {
         deps.lifecycle.failOpen(operation, safeOpenError(error));
       }
@@ -760,10 +818,11 @@ export function createProjectBootstrapController(
             name: conflict.remote.name,
             revision: conflict.remote.revision,
             seed: { code: conflict.remote.code, sheets: conflict.remote.sheets },
-          }, conflict.remoteAssets, false, conflict.remote.assets, conflict.remote.starterId);
+          }, conflict.remoteAssets, false, conflict.remote.assets, conflict.remote.starterId,
+          conflict.remoteAssetVerification);
           return;
         }
-        const assets = await manifestForAssets(conflict.cached.id, conflict.cachedAssets);
+        const prepared = await manifestForAssets(conflict.cached.id, conflict.cachedAssets);
         if (!isCurrentOpenOperation(operation)) return;
         const saved = await deps.updateCloud(
           conflict.remote.id,
@@ -772,14 +831,15 @@ export function createProjectBootstrapController(
             name: conflict.cached.name,
             code: conflict.cached.seed.code,
             sheets: conflict.cached.seed.sheets,
-            assets,
+            assets: prepared.assets,
           },
+          prepared.assetVerification,
         );
         if (!isCurrentOpenOperation(operation)) return;
         await activate(operation, {
           ...conflict.cached,
           revision: saved.revision,
-        }, conflict.cachedAssets, false, assets);
+        }, conflict.cachedAssets, false, prepared.assets);
       } catch (error) {
         deps.lifecycle.failOpen(operation, safeOpenError(error));
       }
@@ -894,7 +954,8 @@ export function createBrowserProjectBootstrap(
     listCloud: () => listNamedCloudProjects(),
     getCloud: (id) => getNamedCloudProject(id),
     createCloud: (request) => createNamedCloudProject(request),
-    updateCloud: (id, revision, project) => updateNamedCloudProject(id, revision, project),
+    updateCloud: (id, revision, project, assetVerification = []) =>
+      updateNamedCloudProject(id, revision, project, fetch, assetVerification),
     uploadCloudAsset: (id, record) => uploadNamedProjectAsset(id, record),
     downloadCloudAsset: (id, entry, legacy) =>
       downloadNamedProjectAsset(id, entry, legacy),
@@ -925,6 +986,9 @@ export function createBrowserProjectBootstrap(
           ...(activation.cloudManifest === undefined
             ? {}
             : { initialAssetManifest: activation.cloudManifest }),
+          ...(activation.assetVerification === undefined
+            ? {}
+            : { initialAssetVerification: activation.assetVerification }),
         });
         syncUnsubscribe = activeSync.subscribe(() => {
           const sync = activeSync?.getSnapshot();

@@ -27,12 +27,15 @@ interface VerifiedObject {
   hash: string;
 }
 
+export const PROJECT_ASSET_VERIFICATION_CONCURRENCY = 16;
+
 /**
- * Every manifest reference is checked against bytes read back from storage.
- * The upload presign binds Content-Type to the reviewed logical image MIME,
- * so readback must match that manifest MIME as well as size/hash. Storage or
- * network exceptions propagate so routes can retain the shared safe 502
- * diagnostic; missing/mismatched objects are ordinary retryable 409 results.
+ * Checks the subset selected by the manifest route against bytes read back
+ * from storage. New uploads normally arrive with server-minted verification
+ * receipts and unchanged v2 references were verified by an earlier manifest
+ * commit; this bounded-concurrency path is the compatibility fallback.
+ * Storage/network exceptions propagate for the route's safe 502 diagnostic;
+ * missing/mismatched objects are ordinary retryable 409 results.
  */
 export async function verifyProjectAssetObjects(
   storage: CloudStorage,
@@ -42,20 +45,30 @@ export async function verifyProjectAssetObjects(
   const checked = new Map<string, VerifiedObject>();
   const failures: ProjectAssetVerificationFailure[] = [];
 
-  for (const asset of assets) {
-    let verified = checked.get(asset.hash);
-    if (verified === undefined) {
-      const stored = await storage.getObject(cloudAssetKey(projectId, asset.hash));
-      verified = stored === null
+  const hashes = [...new Set(assets.map((asset) => asset.hash))];
+  let cursor = 0;
+  const worker = async (): Promise<void> => {
+    while (cursor < hashes.length) {
+      const hash = hashes[cursor++];
+      const stored = await storage.getObject(cloudAssetKey(projectId, hash));
+      checked.set(hash, stored === null
         ? { missing: true, mime: "", size: 0, hash: "" }
         : {
             missing: false,
             mime: stored.mime,
             size: stored.bytes.byteLength,
             hash: createHash("sha256").update(stored.bytes).digest("hex"),
-          };
-      checked.set(asset.hash, verified);
+          });
     }
+  };
+  await Promise.all(Array.from(
+    { length: Math.min(PROJECT_ASSET_VERIFICATION_CONCURRENCY, hashes.length) },
+    worker,
+  ));
+
+  for (const asset of assets) {
+    const verified = checked.get(asset.hash);
+    if (verified === undefined) throw new Error("Asset verification result is missing.");
 
     const reasons: ProjectAssetVerificationReason[] = [];
     if (verified.missing) {

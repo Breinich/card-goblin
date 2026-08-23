@@ -19,6 +19,7 @@ import {
 } from "@/lib/cloud/projectIdentity";
 import { parseCloudProject } from "@/lib/cloud/projectPayload";
 import { normalizeProjectName } from "@/lib/projects/projectMetadata";
+import type { AssetVerificationSubmission } from "@/lib/cloud/namedProjectAsset";
 
 export type ProjectCloudErrorKind =
   | "unavailable"
@@ -326,6 +327,7 @@ export interface CreateNamedCloudProjectRequest {
   id: string;
   idempotencyToken: string;
   project: NamedCloudProjectContent;
+  assetVerification?: readonly AssetVerificationSubmission[];
 }
 
 export async function createNamedCloudProject(
@@ -346,15 +348,25 @@ export async function updateNamedCloudProject(
   baseRevision: number,
   project: NamedCloudProjectContent,
   fetchImpl: FetchLike = fetch,
+  assetVerification: readonly AssetVerificationSubmission[] = [],
 ): Promise<{ revision: number; updatedAt: string }> {
+  const body = JSON.stringify({
+    baseRevision,
+    project,
+    ...(assetVerification.length === 0 ? {} : { assetVerification }),
+  });
+  // Fetch rejects keepalive requests once their combined in-flight bodies
+  // exceed 64 KiB. Preserve pagehide best-effort behavior for small saves,
+  // but never make a large valid project fail before it reaches the server.
+  const keepalive = new TextEncoder().encode(body).byteLength <= 60 * 1024;
   const responseResult = await sameOriginJson(
     fetchImpl,
     `/api/cloud/projects/${encodeURIComponent(id)}`,
     {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ baseRevision, project }),
-      keepalive: true,
+      body,
+      ...(keepalive ? { keepalive: true } : {}),
     },
   );
   const { response } = responseResult;
@@ -393,6 +405,7 @@ interface PresignResponse {
   url: string | null;
   alreadyPresent: boolean;
   verifyUrl: string | null;
+  verificationReceipt?: string;
 }
 
 function parsePresignResponse(raw: unknown): PresignResponse | null {
@@ -402,16 +415,34 @@ function parsePresignResponse(raw: unknown): PresignResponse | null {
     value.alreadyPresent === true &&
     (value.url === null || value.url === undefined) &&
     typeof value.verifyUrl === "string" &&
-    value.verifyUrl.length > 0
+    value.verifyUrl.length > 0 &&
+    (value.verificationReceipt === undefined ||
+      (typeof value.verificationReceipt === "string" && value.verificationReceipt.length <= 128))
   ) {
-    return { url: null, alreadyPresent: true, verifyUrl: value.verifyUrl };
+    return {
+      url: null,
+      alreadyPresent: true,
+      verifyUrl: value.verifyUrl,
+      ...(typeof value.verificationReceipt === "string"
+        ? { verificationReceipt: value.verificationReceipt }
+        : {}),
+    };
   }
   return value.alreadyPresent === false &&
     typeof value.url === "string" &&
     value.url.length > 0 &&
-    value.verifyUrl === null
+    value.verifyUrl === null &&
+    (value.verificationReceipt === null || value.verificationReceipt === undefined)
     ? { url: value.url, alreadyPresent: false, verifyUrl: null }
     : null;
+}
+
+export interface VerifiedCloudAssetUpload {
+  name: string;
+  mime: string;
+  size: number;
+  hash: string;
+  verificationReceipt?: string;
 }
 
 async function prepareNamedAsset(
@@ -443,7 +474,7 @@ export async function uploadNamedProjectAsset(
   projectId: string,
   asset: StoredAsset,
   fetchImpl: FetchLike = fetch,
-): Promise<{ name: string; mime: string; size: number; hash: string }> {
+): Promise<VerifiedCloudAssetUpload> {
   const bytes = await storedAssetBytes(asset);
   const hash = await sha256Hex(bytes);
   const declaration = { name: asset.name, mime: asset.mime, size: bytes.byteLength, hash };
@@ -505,7 +536,15 @@ export async function uploadNamedProjectAsset(
       `The asset “${asset.name}” failed cloud integrity verification.`,
     );
   }
-  return { name: asset.name, mime: asset.mime, size: bytes.byteLength, hash };
+  return {
+    name: asset.name,
+    mime: asset.mime,
+    size: bytes.byteLength,
+    hash,
+    ...(presign.verificationReceipt === undefined
+      ? {}
+      : { verificationReceipt: presign.verificationReceipt }),
+  };
 }
 
 export async function downloadNamedProjectAsset(

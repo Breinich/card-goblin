@@ -7,6 +7,7 @@ import {
   listNamedCloudProjects,
   probeProjectSession,
   sha256Hex,
+  updateNamedCloudProject,
   uploadNamedProjectAsset,
 } from "@/app/editor/_lib/namedCloudClient";
 
@@ -208,6 +209,7 @@ describe("named cloud client", () => {
   it("uploads through the returned URL and verifies downloads byte-for-byte", async () => {
     const bytes = new Uint8Array([9, 8, 7, 6]);
     const hash = await sha256Hex(bytes);
+    const verificationReceipt = `1800000000000.${"r".repeat(43)}`;
     let prepareCount = 0;
     const fetcher = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
@@ -215,7 +217,12 @@ describe("named cloud client", () => {
         prepareCount += 1;
         return prepareCount === 1
           ? json({ url: "https://r2.invalid/put", alreadyPresent: false, verifyUrl: null })
-          : json({ url: null, alreadyPresent: true, verifyUrl: "https://r2.invalid/verify" });
+          : json({
+              url: null,
+              alreadyPresent: true,
+              verifyUrl: "https://r2.invalid/verify",
+              verificationReceipt,
+            });
       }
       if (url === "https://r2.invalid/put") return new Response(null, { status: 200 });
       if (url.endsWith(`/assets/${hash}`)) return json({ url: "https://r2.invalid/get" });
@@ -228,13 +235,60 @@ describe("named cloud client", () => {
       PROJECT_ID,
       { name: "art", mime: "image/png", bytes },
       fetcher,
-    )).resolves.toMatchObject({ hash, size: 4 });
+    )).resolves.toMatchObject({ hash, size: 4, verificationReceipt });
     await expect(downloadNamedProjectAsset(
       PROJECT_ID,
       { name: "art", mime: "image/png", size: 4, hash },
       false,
       fetcher,
     )).resolves.toEqual({ name: "art", mime: "image/png", bytes });
+  });
+
+  it("sends asset verification as a manifest sidecar without changing project content", async () => {
+    const project = {
+      name: "Deck",
+      code: "",
+      sheets: {},
+      assets: [{ name: "art", mime: "image/png", size: 3, hash: "ab".repeat(32) }],
+    };
+    const receipt = `1800000000000.${"s".repeat(43)}`;
+    const fetchMock = vi.fn(async (...args: Parameters<typeof fetch>) => {
+      void args;
+      return json({ revision: 2, updatedAt: "2026-08-22T02:03:04.000Z" });
+    });
+
+    await expect(updateNamedCloudProject(
+      PROJECT_ID,
+      1,
+      project,
+      fetchMock as unknown as typeof fetch,
+      [{ name: "art", receipt }],
+    )).resolves.toMatchObject({ revision: 2 });
+
+    const body = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body));
+    expect(body).toEqual({
+      baseRevision: 1,
+      project,
+      assetVerification: [{ name: "art", receipt }],
+    });
+    expect((fetchMock.mock.calls[0]?.[1] as RequestInit).keepalive).toBe(true);
+    expect(project).not.toHaveProperty("assetVerification");
+  });
+
+  it("does not opt a large manifest PUT into the browser keepalive body limit", async () => {
+    const fetchMock = vi.fn(async (...args: Parameters<typeof fetch>) => {
+      void args;
+      return json({ revision: 2, updatedAt: "2026-08-22T02:03:04.000Z" });
+    });
+
+    await updateNamedCloudProject(
+      PROJECT_ID,
+      1,
+      { name: "Large Deck", code: "x".repeat(70_000), sheets: {}, assets: [] },
+      fetchMock as unknown as typeof fetch,
+    );
+
+    expect((fetchMock.mock.calls[0]?.[1] as RequestInit).keepalive).toBeUndefined();
   });
 
   it("rejects downloaded bytes that do not match the manifest", async () => {

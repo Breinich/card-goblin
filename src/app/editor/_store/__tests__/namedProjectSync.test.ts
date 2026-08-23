@@ -19,12 +19,18 @@ import {
   type NamedProjectSyncController,
   type NamedProjectSyncTransport,
 } from "@/app/editor/_store/namedProjectSync";
-import { ProjectCloudClientError } from "@/app/editor/_lib/namedCloudClient";
+import {
+  ProjectCloudClientError,
+  sha256Hex,
+  type VerifiedCloudAssetUpload,
+} from "@/app/editor/_lib/namedCloudClient";
 import type { NamedCloudProjectContent } from "@/lib/cloud/namedProjectPayload";
 import type { CloudAssetManifestEntry } from "@/lib/cloud/projectPayload";
+import type { AssetVerificationSubmission } from "@/lib/cloud/namedProjectAsset";
 
 const PROJECT_ID = "123e4567-e89b-42d3-a456-426614174000";
 const HASH = "ab".repeat(32);
+const RECEIPT = `1800000000000.${"r".repeat(43)}`;
 const EMPTY_SEED: EditorSeed = { code: "", sheets: {} };
 
 class MemoryStorage implements ProjectRecordStorage {
@@ -43,6 +49,7 @@ interface UpdateCall {
   projectId: string;
   baseRevision: number;
   project: NamedCloudProjectContent;
+  assetVerification: readonly AssetVerificationSubmission[];
 }
 
 class FakeTransport implements NamedProjectSyncTransport {
@@ -56,20 +63,21 @@ class FakeTransport implements NamedProjectSyncTransport {
     updatedAt: "2026-08-22T12:00:00.000Z",
   });
 
-  async uploadAsset(projectId: string, asset: StoredAsset): Promise<CloudAssetManifestEntry> {
+  async uploadAsset(projectId: string, asset: StoredAsset): Promise<VerifiedCloudAssetUpload> {
     this.events.push(`upload:${projectId}:${asset.name}`);
     this.uploads.push({ projectId, asset });
     const size = asset.bytes instanceof Blob ? asset.bytes.size : asset.bytes.byteLength;
-    return { name: asset.name, mime: asset.mime, size, hash: HASH };
+    return { name: asset.name, mime: asset.mime, size, hash: HASH, verificationReceipt: RECEIPT };
   }
 
   async updateProject(
     projectId: string,
     baseRevision: number,
     project: NamedCloudProjectContent,
+    assetVerification: readonly AssetVerificationSubmission[] = [],
   ): Promise<{ revision: number; updatedAt: string }> {
     this.events.push(`update:${projectId}:${baseRevision}`);
-    const call = { projectId, baseRevision, project };
+    const call = { projectId, baseRevision, project, assetVerification };
     this.updates.push(call);
     return this.updateImpl(call);
   }
@@ -87,6 +95,7 @@ interface Harness {
 function harness(options: {
   seed?: EditorSeed;
   initialAssetManifest?: CloudAssetManifestEntry[];
+  initialAssetVerification?: AssetVerificationSubmission[];
   transport?: FakeTransport;
   assets?: AssetStore;
 } = {}): Harness {
@@ -113,6 +122,7 @@ function harness(options: {
     projectSession: session,
     assets,
     initialAssetManifest: options.initialAssetManifest,
+    initialAssetVerification: options.initialAssetVerification,
     transport,
     debounceMs: 50,
     now: () => 123_456,
@@ -174,6 +184,25 @@ describe("named project-scoped autosync", () => {
     controller.destroy();
   });
 
+  it("carries legacy migration receipts through the first rename commit", async () => {
+    const assets = createAssetStore(createInMemoryAssetAdapter(), false, "prospective");
+    await assets.upload("dragon", "image/png", new Uint8Array([1, 2, 3]));
+    const initialManifest = [{ name: "dragon", mime: "image/png", size: 3, hash: HASH }];
+    const initialAssetVerification = [{ name: "dragon", receipt: RECEIPT }];
+    const { controller, session, transport } = harness({
+      assets,
+      initialAssetManifest: initialManifest,
+      initialAssetVerification,
+    });
+
+    session.rename("Migrated Deck");
+    await expect(controller.flush()).resolves.toBe(true);
+
+    expect(transport.uploads).toHaveLength(0);
+    expect(transport.updates[0]?.assetVerification).toEqual(initialAssetVerification);
+    controller.destroy();
+  });
+
   it("uploads immutable assets before PUT and reuses a trusted manifest for content-only saves", async () => {
     const assets = createAssetStore(createInMemoryAssetAdapter(), false, "prospective");
     await assets.upload("dragon", "image/png", new Uint8Array([1, 2, 3]));
@@ -194,7 +223,38 @@ describe("named project-scoped autosync", () => {
       `update:${PROJECT_ID}:1`,
     ]);
     expect(second.transport.updates[0].project.assets).toEqual(initialManifest);
+    expect(second.transport.updates[0].assetVerification).toEqual([
+      { name: "dragon", receipt: RECEIPT },
+    ]);
     second.controller.destroy();
+  });
+
+  it("hashes a large changed library locally and uploads only the changed asset", async () => {
+    const assets = createAssetStore(createInMemoryAssetAdapter(), false, "prospective");
+    const initialManifest: CloudAssetManifestEntry[] = [];
+    for (let index = 0; index < 101; index += 1) {
+      const bytes = new Uint8Array([index]);
+      const name = `asset_${index}`;
+      await assets.upload(name, "image/png", bytes);
+      initialManifest.push({
+        name,
+        mime: "image/png",
+        size: 1,
+        hash: await sha256Hex(bytes),
+      });
+    }
+    const getBytes = vi.fn(assets.getBytes);
+    const observedAssets: AssetStore = { ...assets, getBytes };
+    const instance = harness({ assets: observedAssets, initialAssetManifest: initialManifest });
+    await assets.upload("asset_50", "image/png", new Uint8Array([250]));
+
+    await expect(instance.controller.flush()).resolves.toBe(true);
+
+    expect(instance.transport.uploads.map(({ asset }) => asset.name)).toEqual(["asset_50"]);
+    expect(getBytes).toHaveBeenCalledTimes(1);
+    expect(getBytes).toHaveBeenCalledWith("asset_50");
+    expect(instance.transport.updates[0]?.project.assets).toHaveLength(101);
+    instance.controller.destroy();
   });
 
   it("queues edits made during a push and drains them against the returned revision without retargeting", async () => {

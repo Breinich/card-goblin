@@ -11,6 +11,7 @@ import { createEditorStore, type EditorSeed } from "@/app/editor/_store/editorSt
 import {
   cloudAssetCompatibilityErrors,
   createProjectBootstrapController,
+  PROJECT_ASSET_TRANSFER_CONCURRENCY,
   stageExactProjectAssets,
   type ProjectBootstrapDependencies,
 } from "@/app/editor/_store/projectBootstrap";
@@ -696,7 +697,10 @@ describe("project bootstrap", () => {
       },
       uploadCloudAsset: async (id, record) => {
         events.push(`copy:${id}:${record.name}`);
-        return legacy.assets[0]!;
+        return {
+          ...legacy.assets[0]!,
+          verificationReceipt: `1800000000000.${"r".repeat(43)}`,
+        };
       },
     });
 
@@ -708,7 +712,71 @@ describe("project bootstrap", () => {
       phase: "ready",
       activeProject: { id: "default", location: "cloud", revision: 7 },
     });
+    expect(h.activation).toHaveBeenCalledWith(expect.objectContaining({
+      assetVerification: [{
+        name: "art",
+        receipt: `1800000000000.${"r".repeat(43)}`,
+      }],
+    }));
     await expectActiveProjectRemainsPortable(h.storage, h.assetFactory);
+  });
+
+  it("bounds both download and migration upload concurrency for 100-plus legacy assets", async () => {
+    const entries = Array.from({ length: 125 }, (_, index) => ({
+      name: `asset_${index}`,
+      mime: "image/png",
+      size: 1,
+      hash: index.toString(16).padStart(64, "0"),
+    }));
+    const legacy = publicProject({
+      id: "default",
+      name: "Large Legacy Project",
+      revision: 9,
+      legacy: true,
+      assets: entries,
+    });
+    let activeDownloads = 0;
+    let maxDownloads = 0;
+    let activeUploads = 0;
+    let maxUploads = 0;
+    const h = harness({
+      probeSession: async () => "admin",
+      listCloud: async () => [{
+        id: "default",
+        name: legacy.name,
+        createdAt: legacy.createdAt,
+        updatedAt: legacy.updatedAt,
+        readable: true,
+      }],
+      getCloud: async () => legacy,
+      downloadCloudAsset: async (_id, entry) => {
+        activeDownloads += 1;
+        maxDownloads = Math.max(maxDownloads, activeDownloads);
+        await Promise.resolve();
+        activeDownloads -= 1;
+        return { name: entry.name, mime: entry.mime, bytes: new Uint8Array([1]) };
+      },
+      uploadCloudAsset: async (_id, record) => {
+        activeUploads += 1;
+        maxUploads = Math.max(maxUploads, activeUploads);
+        await Promise.resolve();
+        activeUploads -= 1;
+        const entry = entries.find(({ name }) => name === record.name)!;
+        return {
+          ...entry,
+          verificationReceipt: `1800000000000.${"u".repeat(43)}`,
+        };
+      },
+    });
+
+    await h.controller.start();
+    await h.controller.openCloudProject(h.lifecycle.getSnapshot().cloudProjects[0]!);
+
+    expect(maxDownloads).toBeGreaterThan(1);
+    expect(maxDownloads).toBeLessThanOrEqual(PROJECT_ASSET_TRANSFER_CONCURRENCY);
+    expect(maxUploads).toBeGreaterThan(1);
+    expect(maxUploads).toBeLessThanOrEqual(PROJECT_ASSET_TRANSFER_CONCURRENCY);
+    expect(h.activation.mock.calls[0]?.[0].assetVerification).toHaveLength(125);
   });
 
   it("opens a grandfathered legacy cloud asset that cannot enter the new upload path", async () => {

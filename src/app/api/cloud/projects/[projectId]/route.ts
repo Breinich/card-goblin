@@ -1,7 +1,7 @@
 /** Authenticated read/update for one immutable named cloud project ID. */
 import { createHash } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
-import { requireSession } from "@/lib/cloud/auth";
+import { loadSessionEnvFromProcess, requireSession } from "@/lib/cloud/auth";
 import {
   CLOUD_UNCONFIGURED_MESSAGE,
   CloudConditionalWriteError,
@@ -11,6 +11,8 @@ import {
 } from "@/lib/cloud/r2";
 import { cloudProjectKey, isValidCloudProjectId } from "@/lib/cloud/projectIdentity";
 import { verifyProjectAssetObjects } from "@/lib/cloud/projectAssetVerification";
+import { parseAssetVerificationSubmissions } from "@/lib/cloud/namedProjectAsset";
+import { assetsRequiringObjectVerification } from "@/lib/cloud/projectAssetReceipt";
 import {
   NAMED_CLOUD_PROJECT_FORMAT_VERSION,
   parseNamedCloudProjectContent,
@@ -22,6 +24,7 @@ import {
 } from "@/lib/cloud/namedProjectPayload";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 const NO_STORE_HEADERS = {
   "Cache-Control": "private, no-store, max-age=0",
@@ -121,6 +124,8 @@ export async function PUT(request: NextRequest, context: RouteContext): Promise<
   const bodyRecord = body as Record<string, unknown>;
   const project = parseNamedCloudProjectContent(bodyRecord.project);
   if (project === null) return json({ error: "Invalid project payload." }, 400);
+  const assetVerification = parseAssetVerificationSubmissions(bodyRecord.assetVerification);
+  if (assetVerification === null) return json({ error: "Malformed request." }, 400);
 
   let current: CurrentProject;
   try {
@@ -136,11 +141,22 @@ export async function PUT(request: NextRequest, context: RouteContext): Promise<
     return json({ error: "revision-conflict", revision: current.project.revision }, 409);
   }
 
+  const sessionEnv = loadSessionEnvFromProcess();
+  if (sessionEnv === null) return json({ error: CLOUD_UNCONFIGURED_MESSAGE }, 503);
+  const assetsToVerify = assetsRequiringObjectVerification(
+    sessionEnv.sessionSecret,
+    authorized.id,
+    project.assets,
+    assetVerification,
+    current.project.legacy ? [] : current.project.assets,
+  );
+  if (assetsToVerify === null) return json({ error: "Malformed request." }, 400);
+
   try {
     const verification = await verifyProjectAssetObjects(
       authorized.storage,
       authorized.id,
-      project.assets,
+      assetsToVerify,
     );
     if (!verification.ok) {
       return json({ error: "asset-verification-failed", assets: verification.assets }, 409);

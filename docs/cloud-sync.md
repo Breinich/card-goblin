@@ -38,8 +38,11 @@ asset before changing the active local pointer. If a project-scoped browser cach
 cloud differ, the chooser requires an explicit browser/cloud choice.
 
 Creating from a starter or file uses a client UUID and idempotency token. Immutable
-assets upload first; the server reads back their MIME, byte count, and SHA-256 before
-conditionally publishing revision 1. A failure remains in the chooser with Retry.
+assets upload first; the server reads back their MIME, byte count, and SHA-256 and
+returns a project/asset-bound signed verification receipt before conditionally
+publishing revision 1. Receipts travel only as a request sidecar and never enter the
+stored manifest or portable project-file format. A failure remains in the chooser
+with Retry.
 
 ## What syncs and when
 
@@ -47,6 +50,13 @@ conditionally publishing revision 1. A failure remains in the chooser with Retry
 - Changed images upload under immutable content-addressed keys before the next
   manifest update. Renames never move bytes, and immutable objects are not deleted
   by ordinary project edits.
+- A manifest save trusts exact entries from its already-verified current v2 revision
+  and requires a valid server receipt for each new or changed entry. Legacy clients
+  without receipts retain a bounded-concurrency byte-verification fallback; the
+  normal save path is therefore independent of the project's total asset count.
+- Opening/migrating a large project bounds browser download and upload concurrency.
+  A later asset-library change hashes local bytes and transfers only entries whose
+  content actually changed.
 - Leaving the page flushes a pending project push when possible.
 - A session lasts **30 days**. Rotating `SESSION_SECRET` invalidates every session.
 
@@ -80,6 +90,9 @@ is replaced until the administrator chooses one:
   all remembered sessions.
 - Missing cloud configuration must degrade only the private feature; signed-out
   local editing must continue to work.
+- Server-to-R2 reads and response bodies have explicit deadlines. Small manifest
+  saves use best-effort page-exit keepalive; bodies near the browser's keepalive
+  quota use an ordinary request instead of failing locally before reaching the API.
 
 ## Maintenance guardrails
 

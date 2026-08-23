@@ -10,9 +10,12 @@ import type { AssetStore, StoredAsset } from "@/app/editor/_store/assetStore";
 import type { EditorSeed, EditorStore, SheetsState } from "@/app/editor/_store/editorStore";
 import type { ProjectRecordSession } from "@/app/editor/_store/projectRepository";
 import {
+  sha256Hex,
+  storedAssetBytes,
   updateNamedCloudProject,
   uploadNamedProjectAsset,
   ProjectCloudClientError,
+  type VerifiedCloudAssetUpload,
 } from "@/app/editor/_lib/namedCloudClient";
 import type {
   NamedCloudProjectContent,
@@ -20,6 +23,7 @@ import type {
 } from "@/lib/cloud/namedProjectPayload";
 import type { CloudAssetManifestEntry } from "@/lib/cloud/projectPayload";
 import { isValidCloudProjectId } from "@/lib/cloud/projectIdentity";
+import type { AssetVerificationSubmission } from "@/lib/cloud/namedProjectAsset";
 
 export const NAMED_PROJECT_SYNC_DEBOUNCE_MS = 10_000;
 
@@ -35,11 +39,12 @@ export interface NamedProjectSyncSnapshot {
 }
 
 export interface NamedProjectSyncTransport {
-  uploadAsset(projectId: string, asset: StoredAsset): Promise<CloudAssetManifestEntry>;
+  uploadAsset(projectId: string, asset: StoredAsset): Promise<VerifiedCloudAssetUpload>;
   updateProject(
     projectId: string,
     baseRevision: number,
     project: NamedCloudProjectContent,
+    assetVerification?: readonly AssetVerificationSubmission[],
   ): Promise<{ revision: number; updatedAt: string }>;
 }
 
@@ -51,9 +56,11 @@ export interface NamedProjectSyncOptions {
   assets: AssetStore;
   /** Origin metadata is immutable after creation. */
   starterId?: StarterProjectId;
-  /** Manifest from the coherently opened cloud revision. Reused until the
-   * project-scoped asset store emits a change. */
+  /** Manifest from the coherently opened cloud revision. Reused directly for
+   * content-only saves and as the hash baseline after asset changes. */
   initialAssetManifest?: readonly CloudAssetManifestEntry[];
+  /** Receipts are normally needed only for the first legacy-v1 upgrade. */
+  initialAssetVerification?: readonly AssetVerificationSubmission[];
   transport?: NamedProjectSyncTransport;
   debounceMs?: number;
   now?: () => number;
@@ -77,8 +84,8 @@ export interface NamedProjectSyncController {
 
 const realTransport: NamedProjectSyncTransport = {
   uploadAsset: (projectId, asset) => uploadNamedProjectAsset(projectId, asset),
-  updateProject: (projectId, baseRevision, project) =>
-    updateNamedCloudProject(projectId, baseRevision, project),
+  updateProject: (projectId, baseRevision, project, assetVerification = []) =>
+    updateNamedCloudProject(projectId, baseRevision, project, fetch, assetVerification),
 };
 
 function cloneSheets(sheets: SheetsState): SheetsState {
@@ -175,7 +182,11 @@ export function createNamedProjectSyncController(
   let committedVersion = 0;
   let assetGeneration = 0;
   let cachedManifest: CloudAssetManifestEntry[] | null = null;
+  let cachedAssetVerification: AssetVerificationSubmission[] = [];
   let cachedManifestGeneration = -1;
+  // null means the store changed without per-name detail and requires a full
+  // local comparison. Otherwise only these names need byte reads/hashes.
+  let dirtyAssetNames: Set<string> | null = new Set();
   let localFlushFailed = false;
   let internalSessionMutation = false;
   let sessionEnded = false;
@@ -188,6 +199,7 @@ export function createNamedProjectSyncController(
     manifestMatchesAssets(options.initialAssetManifest, options.assets)
   ) {
     cachedManifest = [...options.initialAssetManifest].sort((a, b) => a.name.localeCompare(b.name));
+    cachedAssetVerification = [...(options.initialAssetVerification ?? [])];
     cachedManifestGeneration = assetGeneration;
   } else if (options.assets.getSnapshot().assets.length === 0) {
     cachedManifest = [];
@@ -196,6 +208,7 @@ export function createNamedProjectSyncController(
     // Existing local assets without a trusted opened manifest must upload on
     // the first content/name save.
     assetGeneration = 1;
+    dirtyAssetNames = null;
   }
 
   const publish = (patch: Partial<NamedProjectSyncSnapshot>): void => {
@@ -310,14 +323,39 @@ export function createNamedProjectSyncController(
     }
   };
 
-  const uploadManifest = async (generation: number): Promise<CloudAssetManifestEntry[]> => {
+  const uploadManifest = async (generation: number): Promise<{
+    assets: CloudAssetManifestEntry[];
+    assetVerification: AssetVerificationSubmission[];
+  }> => {
     if (cachedManifest !== null && cachedManifestGeneration === generation) {
-      return cachedManifest.map((entry) => ({ ...entry }));
+      return {
+        assets: cachedManifest.map((entry) => ({ ...entry })),
+        assetVerification: cachedAssetVerification.map((entry) => ({ ...entry })),
+      };
     }
     const assetSnapshot = options.assets.getSnapshot();
     if (assetSnapshot.disabled) throw new Error("Project asset storage is unavailable.");
     const manifest: CloudAssetManifestEntry[] = [];
+    const assetVerification: AssetVerificationSubmission[] = [];
+    const targetDirtyNames = dirtyAssetNames === null ? null : new Set(dirtyAssetNames);
+    const priorByName = new Map(cachedManifest?.map((entry) => [entry.name, entry]));
+    const priorReceiptByName = new Map(
+      cachedAssetVerification.map((entry) => [entry.name, entry.receipt]),
+    );
     for (const meta of assetSnapshot.assets) {
+      const prior = priorByName.get(meta.name);
+      if (
+        targetDirtyNames !== null &&
+        !targetDirtyNames.has(meta.name) &&
+        prior !== undefined &&
+        prior.mime === meta.mime &&
+        prior.size === meta.size
+      ) {
+        manifest.push({ ...prior });
+        const receipt = priorReceiptByName.get(meta.name);
+        if (receipt !== undefined) assetVerification.push({ name: meta.name, receipt });
+        continue;
+      }
       const asset = await options.assets.getBytes(meta.name);
       if (
         asset === null ||
@@ -327,6 +365,21 @@ export function createNamedProjectSyncController(
       ) {
         throw new Error("Project assets changed while preparing cloud save.");
       }
+      // Asset-store notifications do not identify which bytes changed. Hash
+      // locally so a one-asset edit in a 100-asset project performs one cloud
+      // upload while preserving byte-for-byte correctness for same-size edits.
+      const hash = await sha256Hex(await storedAssetBytes(asset));
+      if (
+        prior !== undefined &&
+        prior.mime === meta.mime &&
+        prior.size === meta.size &&
+        prior.hash === hash
+      ) {
+        manifest.push({ ...prior });
+        const receipt = priorReceiptByName.get(meta.name);
+        if (receipt !== undefined) assetVerification.push({ name: meta.name, receipt });
+        continue;
+      }
       const uploaded = await transport.uploadAsset(projectId, asset);
       if (
         uploaded.name !== meta.name ||
@@ -335,14 +388,24 @@ export function createNamedProjectSyncController(
       ) {
         throw new Error("Cloud asset upload returned inconsistent metadata.");
       }
-      manifest.push(uploaded);
+      manifest.push({
+        name: uploaded.name,
+        mime: uploaded.mime,
+        size: uploaded.size,
+        hash: uploaded.hash,
+      });
+      if (uploaded.verificationReceipt !== undefined) {
+        assetVerification.push({ name: uploaded.name, receipt: uploaded.verificationReceipt });
+      }
     }
     manifest.sort((a, b) => a.name.localeCompare(b.name));
     if (assetGeneration === generation) {
       cachedManifest = manifest.map((entry) => ({ ...entry }));
+      cachedAssetVerification = assetVerification.map((entry) => ({ ...entry }));
       cachedManifestGeneration = generation;
+      dirtyAssetNames = new Set();
     }
-    return manifest;
+    return { assets: manifest, assetVerification };
   };
 
   const performPush = async (): Promise<boolean> => {
@@ -356,16 +419,21 @@ export function createNamedProjectSyncController(
     publish({ status: "saving", dirty: true, error: null });
 
     try {
-      const manifest = await uploadManifest(targetAssetGeneration);
+      const prepared = await uploadManifest(targetAssetGeneration);
       if (sessionEnded) return false;
       const project: NamedCloudProjectContent = {
         name,
         ...(options.starterId === undefined ? {} : { starterId: options.starterId }),
         code: seed.code,
         sheets: seed.sheets,
-        assets: manifest,
+        assets: prepared.assets,
       };
-      const result = await transport.updateProject(projectId, targetRevision, project);
+      const result = await transport.updateProject(
+        projectId,
+        targetRevision,
+        project,
+        prepared.assetVerification,
+      );
       if (!Number.isInteger(result.revision) || result.revision <= targetRevision) {
         throw new Error("Cloud update returned an invalid revision.");
       }
@@ -463,11 +531,26 @@ export function createNamedProjectSyncController(
     if (nameChanged) markChanged();
     if (session.dirty) flushSessionDraft();
   });
-  const unsubscribeAssets = options.assets.subscribe(() => {
+  const unsubscribeAssets = options.assets.subscribe((event) => {
     if (destroyed) return;
     assetGeneration += 1;
-    cachedManifest = null;
+    // Keep the last verified manifest as a content-addressed baseline. The
+    // event identifies the minimum byte subset that needs a fresh local hash.
     cachedManifestGeneration = -1;
+    if (dirtyAssetNames !== null) {
+      if (event.type === "put") {
+        dirtyAssetNames.add(event.name);
+      } else if (event.type === "rename") {
+        dirtyAssetNames.delete(event.from);
+        dirtyAssetNames.add(event.to);
+      } else if (event.type === "delete") {
+        dirtyAssetNames.delete(event.name);
+      } else if (event.type === "clear") {
+        dirtyAssetNames.clear();
+      } else {
+        dirtyAssetNames = null;
+      }
+    }
     markChanged();
   });
 

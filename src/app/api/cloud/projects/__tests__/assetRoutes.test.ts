@@ -239,6 +239,7 @@ describe("POST immutable upload presign", () => {
       url: expect.stringContaining(encodeURIComponent(cloudAssetKey(ID_A, asset.hash))),
       alreadyPresent: false,
       verifyUrl: null,
+      verificationReceipt: null,
     });
     expect(presignPut).toHaveBeenCalledWith(
       cloudAssetKey(ID_A, asset.hash),
@@ -342,6 +343,7 @@ describe("POST immutable upload presign", () => {
       url: null,
       alreadyPresent: true,
       verifyUrl: expect.stringContaining(encodeURIComponent(cloudAssetKey(ID_A, asset.hash))),
+      verificationReceipt: expect.stringMatching(/^[0-9]{10,16}\.[A-Za-z0-9_-]{43}$/),
     });
     expect(presignPut).not.toHaveBeenCalled();
   });

@@ -448,10 +448,11 @@ For every starter or import:
    chooser operation and retain both across Retry;
 3. for every asset, compute SHA-256, conditionally create the immutable
    `assets/<sha256>` object, obtain a presigned GET, download the stored bytes,
-   compute SHA-256 again in the browser, and compare it to the original local
-   hash;
+   compute SHA-256 again in the browser, compare it to the original local hash,
+   and retain the server's signed verification receipt as request-only state;
 4. only after every asset verifies, conditionally create revision 1 with an
-   idempotency-token hash and deterministic payload fingerprint;
+   idempotency-token hash and deterministic payload fingerprint, carrying the
+   receipts beside the manifest rather than storing them in it;
 5. immediately GET and validate the stored manifest, then bind the active
    project; and
 6. enter the editor.
@@ -476,8 +477,10 @@ Subsequent code/sheet edits retain the existing long cloud debounce and local
 first persistence. Asset changes retain immediate transfer into immutable
 hash-keyed objects, but the confirmed remote-hash record is populated only
 after presigned GET plus SHA-256 comparison, not merely after PUT
-acknowledgement. Every manifest write preflights that record and verifies
-missing or stale entries first. A green status is set only after an
+acknowledgement. Exact entries in the current verified v2 manifest require no
+second R2 byte read; a new/changed entry supplies its project- and metadata-bound
+server receipt. Clients without receipts use bounded-concurrency byte verification
+as a compatibility fallback. A green status is set only after an
 authoritative pull or a successful manifest write whose assets meet that rule.
 
 ## Atomic staging and commit

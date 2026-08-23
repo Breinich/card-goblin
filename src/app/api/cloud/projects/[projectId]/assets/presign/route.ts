@@ -1,7 +1,7 @@
 /** Authenticated conditional-create presign for one named project's asset. */
 
 import { NextResponse, type NextRequest } from "next/server";
-import { requireSession } from "@/lib/cloud/auth";
+import { loadSessionEnvFromProcess, requireSession } from "@/lib/cloud/auth";
 import { PRESIGN_GET_TTL_SECONDS, PRESIGN_PUT_TTL_SECONDS } from "@/lib/cloud/keys";
 import {
   LEGACY_CLOUD_PROJECT_ID,
@@ -13,6 +13,7 @@ import {
   parseProspectiveCloudAsset,
   storedObjectMatchesImmutableAsset,
 } from "@/lib/cloud/namedProjectAsset";
+import { createProjectAssetVerificationReceipt } from "@/lib/cloud/projectAssetReceipt";
 import { parseStoredNamedCloudProjectJson } from "@/lib/cloud/namedProjectPayload";
 import {
   CLOUD_UNCONFIGURED_MESSAGE,
@@ -43,6 +44,8 @@ async function projectManifestState(storage: CloudStorage, projectId: string): P
 export async function POST(request: NextRequest, context: RouteContext): Promise<NextResponse> {
   const session = requireSession(request);
   if (!session.ok) return json({ error: session.error }, session.status);
+  const sessionEnv = loadSessionEnvFromProcess();
+  if (sessionEnv === null) return json({ error: CLOUD_UNCONFIGURED_MESSAGE }, 503);
   const { projectId } = await context.params;
   if (!isValidCloudProjectId(projectId)) return json({ error: "Invalid project ID." }, 400);
 
@@ -79,7 +82,12 @@ export async function POST(request: NextRequest, context: RouteContext): Promise
         return json({ error: "immutable-asset-conflict" }, 409);
       }
       const verifyUrl = await storage.presignGet(key, PRESIGN_GET_TTL_SECONDS);
-      return json({ url: null, alreadyPresent: true, verifyUrl });
+      const verificationReceipt = createProjectAssetVerificationReceipt(
+        sessionEnv.sessionSecret,
+        projectId,
+        asset,
+      );
+      return json({ url: null, alreadyPresent: true, verifyUrl, verificationReceipt });
     }
 
     const url = await storage.presignPut(
@@ -89,7 +97,7 @@ export async function POST(request: NextRequest, context: RouteContext): Promise
       PRESIGN_PUT_TTL_SECONDS,
       { onlyIfAbsent: true },
     );
-    return json({ url, alreadyPresent: false, verifyUrl: null });
+    return json({ url, alreadyPresent: false, verifyUrl: null, verificationReceipt: null });
   } catch (error) {
     return json({ error: describeCloudStorageFailure(error) }, 502);
   }
