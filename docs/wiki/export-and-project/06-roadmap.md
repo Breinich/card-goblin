@@ -19,8 +19,8 @@ pipeline from script to rendered deck.
 **PDF export.** Page size, margins, spacing, cut lines, crop marks, and
 duplex-mirrored backs, rendered at 300 DPI. See [PDF export](01-pdf-export.md).
 
-**Autosave.** Your project — code and rows — survives a reload, saved in your
-browser, with a **Reset to demo** escape hatch. See [Autosave](02-autosave.md).
+**Autosave.** Your project — code and rows — survives a reload in your browser;
+**New / Open Project** returns to the project chooser. See [Autosave](02-autosave.md).
 
 **Autocomplete.** The code editor suggests what fits where your cursor is — column
 names, property names, enum cases, color names, icon codes. See

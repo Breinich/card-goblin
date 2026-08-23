@@ -6,7 +6,11 @@ summary: The three panels, the status bar, and how live compiling behaves.
 
 # The editor
 
-The editor lives at [`/editor`](/editor). Three panels and a status bar:
+The editor lives at [`/editor`](/editor). It first opens a blocking project
+chooser: continue this browser's saved project, create a named project from an
+available starter, or load a project file. The chooser has no close action until
+a project has opened successfully. After that, the workspace has three panels
+and a status bar:
 
 ```
 ┌────────────────────────┬────────────────────────┐
@@ -99,12 +103,18 @@ doesn't compile. To its right sit the editor's project-lifecycle controls:
 
 - **Assets** — opens the drawer of images uploaded from your machine (see
   [Uploaded assets](../export-and-project/04-assets.md)), with a count badge.
-- **Export project** / **Import project** — download the whole project as a
-  file, or load one back — see [Project files](../export-and-project/03-project-files.md).
+- **Export project** — download the whole project as a portable file. To load
+  one back, choose **New / Open Project**, then **Load project file** — see
+  [Project files](../export-and-project/03-project-files.md).
 - **Export Data** — download one CSV row per generated card, including virtual
   columns — see [Data export](../export-and-project/08-data-export.md).
-- **Reset to demo** — wipes your saved project and loads the demo back. It
-  asks first (see [Autosave](../export-and-project/02-autosave.md)).
+- **Project name** — shows the active project's editable name. Choose **Rename**
+  to edit it, then **Save** or **Cancel**.
+- **New / Open Project** — returns to the project chooser. Your current project
+  remains active unless another project finishes opening.
+
+Sign-in and sign-out are not editor controls. Administrator authentication lives
+on `/admin`.
 
 ## The compile loop
 

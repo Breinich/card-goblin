@@ -464,6 +464,24 @@ describe("collectExportAssets (export is complete or fails, never silently parti
     expect(assets.map((a) => a.name)).toEqual(["dragon", "imp"]);
   });
 
+  it("rejects a read that no longer matches the captured asset snapshot", async () => {
+    const snapshot = {
+      assets: [{ name: "dragon", mime: "image/png", size: 3 }],
+      disabled: false,
+    };
+    const store = {
+      getSnapshot: () => snapshot,
+      getBytes: async () => ({
+        name: "dragon",
+        mime: "image/jpeg",
+        bytes: new Uint8Array([1, 2, 3]),
+      }),
+    };
+    await expect(collectExportAssets(store, snapshot)).rejects.toThrow(
+      EXPORT_ASSETS_UNREADABLE_MESSAGE,
+    );
+  });
+
   it("runExport surfaces the SPECIFIC abort message, and the download step never runs", async () => {
     const store = storeWithFailingReads([dragonAsset], 0);
     await store.refresh();

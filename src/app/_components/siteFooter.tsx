@@ -29,7 +29,7 @@ export default function SiteFooter(): ReactElement {
               <ul className="mt-3 space-y-2 text-gray-500">
                 <li>
                   <Link href="/editor" className="hover:text-white">
-                    Editor
+                    Open Editor
                   </Link>
                 </li>
                 <li>

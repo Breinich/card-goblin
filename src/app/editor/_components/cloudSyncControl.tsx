@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Cloud sync's status-bar control (DESIGN.md §7.6): "Sign in" when signed
+ * Legacy cloud authentication control (DESIGN.md §7.6): "Sign in" when signed
  * out; a status dot + label ("Synced 2m ago" / "Syncing…" / "Offline" /
  * "This browser is behind") + "Sign out" when signed in, with Reload/
  * Overwrite buttons appearing only in the "behind" state (brief D/E).
@@ -15,6 +15,10 @@
  * `makeSingleton` forwarding pattern, mirroring assetStore.ts): subscribing
  * here on mount is enough to correctly receive the real controller's state
  * once it attaches, with no reliance on some later unrelated re-render.
+ *
+ * DESIGN ◆53 no longer mounts this component in the editor: authentication
+ * is owned by /admin. It remains isolated while the old single-project cloud
+ * controller's non-auth status/conflict behavior is migrated.
  *
  * `SignInDialog` reuses pdfExportModal.tsx's dependency-free a11y recipe
  * verbatim: role="dialog" aria-modal, focus moves in on open (to the

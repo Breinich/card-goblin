@@ -23,7 +23,12 @@
  */
 
 import { parseSheetsPayload, isRecord } from "@/app/editor/_store/sheetsPayload";
-import { ASSET_MAX_BYTES, isValidAssetName } from "@/app/editor/_store/assetStore";
+import {
+  ASSET_MAX_BYTES,
+  ASSET_MAX_NAME_LENGTH,
+  isSupportedAssetMime,
+  isValidAssetName,
+} from "@/app/editor/_store/assetStore";
 import type { SheetsState } from "@/app/editor/_store/editorStore";
 
 /**
@@ -44,17 +49,8 @@ import type { SheetsState } from "@/app/editor/_store/editorStore";
  * Reused by the presign route (`assets/presign/route.ts`) so the same rule
  * applies wherever a mime type crosses into R2.
  */
-const ALLOWED_CLOUD_IMAGE_MIMES = new Set([
-  "image/png",
-  "image/jpeg",
-  "image/gif",
-  "image/webp",
-  "image/avif",
-  "image/svg+xml",
-]);
-
 export function isSupportedCloudImageMime(mime: string): boolean {
-  return ALLOWED_CLOUD_IMAGE_MIMES.has(mime);
+  return isSupportedAssetMime(mime);
 }
 
 /**
@@ -65,7 +61,7 @@ export function isSupportedCloudImageMime(mime: string): boolean {
  * 5000-character string presign "fine"). `isValidAssetName`'s character
  * set is ASCII-only, so character count and byte count are the same here.
  */
-export const MAX_CLOUD_ASSET_NAME_LENGTH = 100;
+export const MAX_CLOUD_ASSET_NAME_LENGTH = ASSET_MAX_NAME_LENGTH;
 
 export function isValidCloudAssetName(name: string): boolean {
   return isValidAssetName(name) && name.length <= MAX_CLOUD_ASSET_NAME_LENGTH;

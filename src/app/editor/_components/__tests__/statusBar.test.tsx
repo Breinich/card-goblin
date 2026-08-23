@@ -4,11 +4,17 @@
  * indicator — rendered to static markup against REAL compiles through a
  * headless editor store (same approach as the other window tests).
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { DEMO_PROJECT_SOURCE } from "@/lib/lang/demoProject";
 import { createEditorStore, type EditorState } from "@/app/editor/_store/editorStore";
-import { ResetToDemoButton, StatusBarContent } from "@/app/editor/_components/statusBar";
+import {
+  ActiveProjectChrome,
+  PROJECT_RENAME_FAILED,
+  default as StatusBar,
+  StatusBarContent,
+  runProjectRename,
+} from "@/app/editor/_components/statusBar";
 
 function renderState(state: EditorState): string {
   return renderToStaticMarkup(
@@ -17,7 +23,9 @@ function renderState(state: EditorState): string {
       lastGood={state.lastGoodModel}
       isStale={state.isStale}
       autosaveDisabled={state.autosaveDisabled}
-      onReset={() => {}}
+      projectName="Monster Deck"
+      onRenameProject={() => {}}
+      onNewOpenProject={() => {}}
       onExportProject={() => {}}
       onExportData={() => {}}
       onImportProject={() => {}}
@@ -28,6 +36,23 @@ function renderState(state: EditorState): string {
 const stripTags = (markup: string): string => markup.replace(/<[^>]+>/g, "");
 
 describe("StatusBarContent", () => {
+  it("the connected editor bar mounts no authentication or reset controls", () => {
+    const text = stripTags(
+      renderToStaticMarkup(
+        <StatusBar
+          projectName="Monster Deck"
+          onRenameProject={() => {}}
+          onNewOpenProject={() => {}}
+        />,
+      ),
+    );
+    expect(text).toContain("Monster Deck");
+    expect(text).toContain("New / Open Project");
+    expect(text).not.toContain("Sign in");
+    expect(text).not.toContain("Sign out");
+    expect(text).not.toContain("Reset to demo");
+  });
+
   it("clean seeded demo: 9 cards, zero problems/flags/exclusions, no stale indicator", () => {
     const text = stripTags(renderState(createEditorStore().getState()));
     expect(text).toContain("9 cards");
@@ -38,12 +63,17 @@ describe("StatusBarContent", () => {
     expect(text).not.toContain("autosave off"); // storage healthy → no indicator
   });
 
-  it("carries the §7.1 project-file pair in the right-hand group", () => {
+  it("keeps portable export while routing imports through New / Open Project", () => {
     const text = stripTags(renderState(createEditorStore().getState()));
     expect(text).toContain("Export project");
-    expect(text).toContain("Import project");
+    expect(text).not.toContain("Import project");
+    expect(text).toContain("New / Open Project");
     expect(text).toContain("Export Data");
-    expect(text).toContain("Reset to demo"); // beside reset, per the spec
+    expect(text).toContain("Monster Deck");
+    expect(text).toContain("New / Open Project");
+    expect(text).not.toContain("Reset to demo");
+    expect(text).not.toContain("Sign in");
+    expect(text).not.toContain("Sign out");
   });
 
   it("broken compile: problems counted red, cards hold the LAST GOOD count, stale indicator on", () => {
@@ -94,7 +124,9 @@ describe("StatusBarContent", () => {
           lastGood={null}
           isStale={false}
           autosaveDisabled={false}
-          onReset={() => {}}
+          projectName={null}
+          onRenameProject={() => {}}
+          onNewOpenProject={() => {}}
           onExportProject={() => {}}
           onExportData={() => {}}
           onImportProject={() => {}}
@@ -112,13 +144,59 @@ describe("StatusBarContent", () => {
     expect(stripTags(markup)).toContain("autosave off");
     expect(markup).toContain("won&#x27;t survive a reload"); // the title explains it
   });
+
+  it("labels browser projects local-only and names cloud projects in save status", () => {
+    const state = createEditorStore().getState();
+    const local = renderToStaticMarkup(
+      <StatusBarContent
+        compile={state.compile}
+        lastGood={state.lastGoodModel}
+        isStale={false}
+        autosaveDisabled={false}
+        projectName="Local Deck"
+        projectLocation="browser"
+        onRenameProject={() => {}}
+        onNewOpenProject={() => {}}
+        onExportProject={() => {}}
+        onExportData={() => {}}
+        onImportProject={() => {}}
+      />,
+    );
+    expect(stripTags(local)).toContain("Local only");
+
+    const cloud = renderToStaticMarkup(
+      <StatusBarContent
+        compile={state.compile}
+        lastGood={state.lastGoodModel}
+        isStale={false}
+        autosaveDisabled={false}
+        projectName="Cloud Deck"
+        projectLocation="cloud"
+        cloudSync={{
+          status: "signed-out",
+          revision: 2,
+          dirty: true,
+          lastSyncedAt: null,
+          error: "session ended",
+        }}
+        onRenameProject={() => {}}
+        onNewOpenProject={() => {}}
+        onExportProject={() => {}}
+        onExportData={() => {}}
+        onImportProject={() => {}}
+      />,
+    );
+    expect(stripTags(cloud)).toContain("Cloud Deck · cloud save stopped");
+    expect(stripTags(cloud)).toContain("Open Admin");
+    expect(stripTags(cloud)).not.toContain("Sign in");
+  });
 });
 
 describe("StatusBarContent — never-clip action group (adversarial review item 2)", () => {
   // Regression: the whole bar used to be ONE `overflow-hidden whitespace-
   // nowrap` line, so at ~1000px with the stale + autosave-off indicators on,
-  // Reset to demo / Export / Import — and an armed confirm's answer buttons
-  // — got clipped out of view along with the counters. Real reflow is a
+  // Project name / New/Open / Export / Import got clipped out of view along
+  // with the counters. Real reflow is a
   // browser layout behavior renderToStaticMarkup can't exercise (no layout
   // engine); these pin the structural contract instead.
   it("the outer bar carries no overflow-hidden — that clipped everything, buttons included", () => {
@@ -135,39 +213,101 @@ describe("StatusBarContent — never-clip action group (adversarial review item 
     );
   });
 
-  it("the action group (Assets/Export/Import/Reset) wraps instead of clipping", () => {
+  it("the action group (project/Assets/Export/Import) wraps instead of clipping", () => {
     const markup = renderState(createEditorStore().getState());
     expect(markup).toContain('class="ml-auto flex flex-wrap items-center gap-3"');
   });
 
-  it("an armed Reset confirm's answer buttons live in a wrapping group, not a rigid line", () => {
+  it("the inline rename form wraps so Save and Cancel cannot clip", () => {
     const markup = renderToStaticMarkup(
-      <ResetToDemoButton onReset={() => {}} initialConfirming />,
+      <ActiveProjectChrome
+        projectName="Monster Deck"
+        onRenameProject={() => {}}
+        onNewOpenProject={() => {}}
+        initialEditing
+      />,
     );
     expect(markup).toContain('class="flex flex-wrap items-center gap-1.5"');
-    // Still says what it says — the restructure didn't drop content.
-    expect(stripTags(markup)).toContain("Replace your project (and your uploaded assets)");
+    expect(stripTags(markup)).toContain("Save");
+    expect(stripTags(markup)).toContain("Cancel");
   });
 });
 
-describe("ResetToDemoButton (§6.2 two-step confirm)", () => {
-  it("rests as a single quiet button — no destructive control visible", () => {
-    const markup = renderToStaticMarkup(<ResetToDemoButton onReset={() => {}} />);
+describe("ActiveProjectChrome", () => {
+  const props = {
+    projectName: "Monster Deck",
+    onRenameProject: () => {},
+    onNewOpenProject: () => {},
+  };
+
+  it("rests as the active name, Rename, and New / Open Project", () => {
+    const markup = renderToStaticMarkup(<ActiveProjectChrome {...props} />);
     const text = stripTags(markup);
-    expect(text).toContain("Reset to demo");
-    expect(text).not.toContain("Replace your project");
-    // The armed state's destructive styling is nowhere in the resting state.
-    expect(markup).not.toContain("text-red-400");
+    expect(text).toContain("Monster Deck");
+    expect(text).toContain("Rename");
+    expect(text).toContain("New / Open Project");
+    expect(markup).toContain('aria-label="Edit project name"');
   });
 
-  it("armed (test seam): asks the question and offers Reset / Keep", () => {
+  it("has no rename affordance before a project is active", () => {
     const markup = renderToStaticMarkup(
-      <ResetToDemoButton onReset={() => {}} initialConfirming />,
+      <ActiveProjectChrome {...props} projectName={null} />,
     );
+    expect(stripTags(markup)).toContain("No active project");
+    expect(stripTags(markup)).not.toContain("Rename");
+    expect(stripTags(markup)).toContain("New / Open Project");
+  });
+
+  it("editing renders a labeled Save/Cancel form", () => {
+    const markup = renderToStaticMarkup(<ActiveProjectChrome {...props} initialEditing />);
     const text = stripTags(markup);
-    expect(text).toContain("Replace your project (and your uploaded assets) with the demo?");
-    expect(text).toContain("Reset");
-    expect(text).toContain("Keep");
-    expect(markup).toContain("text-red-400"); // the destructive click is marked
+    expect(markup).toContain('id="active-project-name"');
+    expect(markup).toContain('value="Monster Deck"');
+    expect(text).toContain("Save");
+    expect(text).toContain("Cancel");
+  });
+
+  it("invalid drafts disable Save and expose the shared validation state", () => {
+    const markup = renderToStaticMarkup(
+      <ActiveProjectChrome
+        {...props}
+        initialEditing
+        initialDraft=""
+        initialError="Enter a project name."
+      />,
+    );
+    expect(markup).toContain('aria-invalid="true"');
+    expect(markup).toMatch(/<button type="submit" disabled=""/);
+    expect(markup).toContain('role="alert"');
+    expect(stripTags(markup)).toContain("Enter a project name.");
+  });
+});
+
+describe("runProjectRename", () => {
+  it("normalizes with the shared name contract before invoking persistence", async () => {
+    const rename = vi.fn(() => undefined);
+    await expect(runProjectRename("  Renamed 🃏  ", rename)).resolves.toEqual({
+      ok: true,
+      name: "Renamed 🃏",
+      error: null,
+    });
+    expect(rename).toHaveBeenCalledWith("Renamed 🃏");
+  });
+
+  it("does not call persistence for an invalid name", async () => {
+    const rename = vi.fn(() => undefined);
+    await expect(runProjectRename("   ", rename)).resolves.toMatchObject({
+      ok: false,
+      error: "Enter a project name.",
+    });
+    expect(rename).not.toHaveBeenCalled();
+  });
+
+  it("turns persistence failure into fixed project-chrome copy", async () => {
+    await expect(
+      runProjectRename("Valid", async () => {
+        throw new Error("localStorage leaked detail");
+      }),
+    ).resolves.toEqual({ ok: false, name: "Valid", error: PROJECT_RENAME_FAILED });
   });
 });

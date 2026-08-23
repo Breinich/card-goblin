@@ -39,6 +39,23 @@ export interface ListedObject {
   size: number;
 }
 
+export interface CloudListPageRequest {
+  prefix: string;
+  /** S3 hierarchy separator. When present, matching descendants are folded
+   * into `commonPrefixes` instead of returning every nested asset object. */
+  delimiter?: string;
+  /** Opaque token returned by the immediately preceding page. */
+  continuationToken?: string;
+  /** S3/R2 accepts 1..1000. Omit for the provider default. */
+  maxKeys?: number;
+}
+
+export interface CloudListPage {
+  objects: ListedObject[];
+  commonPrefixes: string[];
+  nextContinuationToken: string | null;
+}
+
 export class CloudStorageError extends Error {
   readonly operation: "GET" | "PUT" | "DELETE" | "LIST";
   readonly status: number | null;
@@ -142,8 +159,22 @@ export interface CloudStorage {
    * signature mismatch BEFORE storing anything — closing the "upload more
    * bytes than presigned for" gap directly, not just mitigating it.
    */
-  presignPut(key: string, mime: string, size: number, ttlSeconds: number): Promise<string>;
+  /** `onlyIfAbsent` signs `If-None-Match: *`; the browser must send that
+   * exact header. It is used for immutable hash-keyed assets and omitted by
+   * legacy overwrite-capable callers. */
+  presignPut(
+    key: string,
+    mime: string,
+    size: number,
+    ttlSeconds: number,
+    options?: { onlyIfAbsent?: boolean },
+  ): Promise<string>;
   presignGet(key: string, ttlSeconds: number): Promise<string>;
+  /** One ListObjectsV2 page. The continuation token is opaque to callers. */
+  listPage(request: CloudListPageRequest): Promise<CloudListPage>;
+  /** All objects under a prefix. This legacy convenience method now follows
+   * every continuation page, preserving its source-compatible return type
+   * without silently truncating at R2's 1,000-key boundary. */
   list(prefix: string): Promise<ListedObject[]>;
 }
 
@@ -258,7 +289,7 @@ async function storageResponseError(operation: R2Operation, key: string, res: Re
  * Exported for a direct unit test against a hand-written XML fixture (no
  * network needed to exercise the parsing itself).
  */
-export function parseListObjectsXml(xml: string): ListedObject[] {
+export function parseListObjectsPageXml(xml: string): CloudListPage {
   const objects: ListedObject[] = [];
   const contentsRe = /<Contents>([\s\S]*?)<\/Contents>/g;
   let match: RegExpExecArray | null;
@@ -274,7 +305,26 @@ export function parseListObjectsXml(xml: string): ListedObject[] {
       size: Number(sizeText) || 0,
     });
   }
-  return objects;
+
+  const commonPrefixes: string[] = [];
+  const prefixRe = /<CommonPrefixes>([\s\S]*?)<\/CommonPrefixes>/g;
+  while ((match = prefixRe.exec(xml)) !== null) {
+    const prefix = /<Prefix>([\s\S]*?)<\/Prefix>/.exec(match[1])?.[1];
+    if (prefix !== undefined) commonPrefixes.push(decodeXmlEntities(prefix));
+  }
+
+  const truncated = /<IsTruncated>\s*true\s*<\/IsTruncated>/i.test(xml);
+  const encodedToken = /<NextContinuationToken>([\s\S]*?)<\/NextContinuationToken>/.exec(xml)?.[1];
+  const nextContinuationToken = truncated && encodedToken !== undefined && encodedToken.length > 0
+    ? decodeXmlEntities(encodedToken)
+    : null;
+
+  return { objects, commonPrefixes, nextContinuationToken };
+}
+
+/** Pre-pagination parser kept source-compatible for existing tests/callers. */
+export function parseListObjectsXml(xml: string): ListedObject[] {
+  return parseListObjectsPageXml(xml).objects;
 }
 
 /** Order matters: `&amp;` LAST, or an original literal `&amp;lt;` (i.e. the
@@ -302,6 +352,37 @@ export function createR2Storage(config: R2Config): CloudStorage {
     service: "s3",
     region: "auto",
   });
+
+  async function listPage(request: CloudListPageRequest): Promise<CloudListPage> {
+    const url = new URL(bucketUrl(config));
+    url.searchParams.set("list-type", "2");
+    url.searchParams.set("prefix", request.prefix);
+    if (request.delimiter !== undefined) url.searchParams.set("delimiter", request.delimiter);
+    if (request.continuationToken !== undefined) {
+      url.searchParams.set("continuation-token", request.continuationToken);
+    }
+    if (request.maxKeys !== undefined) url.searchParams.set("max-keys", String(request.maxKeys));
+
+    const res = await r2Fetch("LIST", request.prefix, () =>
+      client.fetch(url.toString(), { method: "GET", cache: "no-store" }),
+    );
+    if (!res.ok) throw await storageResponseError("LIST", request.prefix, res);
+    const xml = await res.text();
+    const parsed = parseListObjectsPageXml(xml);
+    // An R2 response that says it is truncated but omits its continuation
+    // token would otherwise make any convenience loop silently stop at 1000.
+    if (
+      parsed.nextContinuationToken === null &&
+      /<IsTruncated>\s*true\s*<\/IsTruncated>/i.test(xml)
+    ) {
+      throw new CloudStorageError("R2 LIST returned a truncated page without a token", {
+        operation: "LIST",
+        status: res.status,
+        code: "MissingContinuationToken",
+      });
+    }
+    return parsed;
+  }
 
   return {
     async getObject(key) {
@@ -384,7 +465,7 @@ export function createR2Storage(config: R2Config): CloudStorage {
       }
     },
 
-    async presignPut(key, mime, size, ttlSeconds) {
+    async presignPut(key, mime, size, ttlSeconds, options) {
       const url = new URL(objectUrl(config, key));
       url.searchParams.set("X-Amz-Expires", String(ttlSeconds));
       // `allHeaders: true` so `content-type`/`content-length` (normally
@@ -396,10 +477,18 @@ export function createR2Storage(config: R2Config): CloudStorage {
       // body's true computed length, never a JS-supplied override) — so
       // signing it is what turns "declared size" into an ENFORCED one (see
       // the interface doc comment on `presignPut`).
+      const headers: Record<string, string> = {
+        "content-type": mime,
+        "content-length": String(size),
+      };
+      // Named-project asset keys are immutable. Signing If-None-Match makes
+      // R2 reject a stale/replayed presign after another upload wins the key.
+      // Legacy callers omit the option and retain their existing behavior.
+      if (options?.onlyIfAbsent === true) headers["if-none-match"] = "*";
       const signed = await client.sign(url.toString(), {
         method: "PUT",
         aws: { signQuery: true, allHeaders: true },
-        headers: { "content-type": mime, "content-length": String(size) },
+        headers,
       });
       return signed.url;
     },
@@ -414,13 +503,27 @@ export function createR2Storage(config: R2Config): CloudStorage {
       return signed.url;
     },
 
+    listPage,
+
     async list(prefix) {
-      const url = new URL(bucketUrl(config));
-      url.searchParams.set("list-type", "2");
-      url.searchParams.set("prefix", prefix);
-      const res = await r2Fetch("LIST", prefix, () => client.fetch(url.toString(), { method: "GET" }));
-      if (!res.ok) throw await storageResponseError("LIST", prefix, res);
-      return parseListObjectsXml(await res.text());
+      const objects: ListedObject[] = [];
+      const seenTokens = new Set<string>();
+      let continuationToken: string | undefined;
+      do {
+        const page = await listPage({ prefix, continuationToken });
+        objects.push(...page.objects);
+        if (page.nextContinuationToken === null) break;
+        if (seenTokens.has(page.nextContinuationToken)) {
+          throw new CloudStorageError("R2 LIST repeated a continuation token", {
+            operation: "LIST",
+            status: 200,
+            code: "RepeatedContinuationToken",
+          });
+        }
+        seenTokens.add(page.nextContinuationToken);
+        continuationToken = page.nextContinuationToken;
+      } while (true);
+      return objects;
     },
   };
 }
@@ -444,6 +547,38 @@ export function createInMemoryCloudStorage(
     table.set(key, { ...value, etag: `etag-${++counter}` });
   }
 
+  function listedEntries(request: CloudListPageRequest): Array<
+    | { kind: "object"; sortKey: string; object: ListedObject }
+    | { kind: "prefix"; sortKey: string; prefix: string }
+  > {
+    const prefixes = new Set<string>();
+    const entries: Array<
+      | { kind: "object"; sortKey: string; object: ListedObject }
+      | { kind: "prefix"; sortKey: string; prefix: string }
+    > = [];
+    for (const [key, value] of [...table.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+      if (!key.startsWith(request.prefix)) continue;
+      const remainder = key.slice(request.prefix.length);
+      const delimiterIndex = request.delimiter === undefined
+        ? -1
+        : remainder.indexOf(request.delimiter);
+      if (delimiterIndex >= 0 && request.delimiter !== undefined) {
+        const prefix = request.prefix + remainder.slice(0, delimiterIndex + request.delimiter.length);
+        if (!prefixes.has(prefix)) {
+          prefixes.add(prefix);
+          entries.push({ kind: "prefix", sortKey: prefix, prefix });
+        }
+      } else {
+        entries.push({
+          kind: "object",
+          sortKey: key,
+          object: { key, etag: value.etag, size: value.bytes.byteLength },
+        });
+      }
+    }
+    return entries.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+  }
+
   return {
     async getObject(key) {
       const found = table.get(key);
@@ -465,18 +600,39 @@ export function createInMemoryCloudStorage(
       table.delete(key);
     },
 
-    async presignPut(key, mime, size, ttlSeconds) {
-      return `https://fake-r2.test/${encodeURIComponent(key)}?mode=put&mime=${encodeURIComponent(mime)}&size=${size}&ttl=${ttlSeconds}`;
+    async presignPut(key, mime, size, ttlSeconds, options) {
+      return `https://fake-r2.test/${encodeURIComponent(key)}?mode=put&mime=${encodeURIComponent(mime)}&size=${size}&ttl=${ttlSeconds}&onlyIfAbsent=${options?.onlyIfAbsent === true}`;
     },
 
     async presignGet(key, ttlSeconds) {
       return `https://fake-r2.test/${encodeURIComponent(key)}?mode=get&ttl=${ttlSeconds}`;
     },
 
+    async listPage(request) {
+      const entries = listedEntries(request);
+      const offsetText = request.continuationToken?.replace(/^memory:/, "") ?? "0";
+      const offset = Number(offsetText);
+      if (!Number.isInteger(offset) || offset < 0 || offset > entries.length) {
+        throw new CloudStorageError("Invalid in-memory LIST continuation token", {
+          operation: "LIST",
+          status: 400,
+          code: "InvalidContinuationToken",
+        });
+      }
+      const maxKeys = request.maxKeys === undefined
+        ? 1000
+        : Math.max(1, Math.min(1000, Math.trunc(request.maxKeys)));
+      const selected = entries.slice(offset, offset + maxKeys);
+      const nextOffset = offset + selected.length;
+      return {
+        objects: selected.flatMap((entry) => entry.kind === "object" ? [entry.object] : []),
+        commonPrefixes: selected.flatMap((entry) => entry.kind === "prefix" ? [entry.prefix] : []),
+        nextContinuationToken: nextOffset < entries.length ? `memory:${nextOffset}` : null,
+      };
+    },
+
     async list(prefix) {
-      return [...table.entries()]
-        .filter(([key]) => key.startsWith(prefix))
-        .map(([key, value]) => ({ key, etag: value.etag, size: value.bytes.byteLength }));
+      return listedEntries({ prefix }).flatMap((entry) => entry.kind === "object" ? [entry.object] : []);
     },
   };
 }

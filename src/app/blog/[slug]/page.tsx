@@ -158,10 +158,10 @@ export default async function BlogPostPage({ params }: PageProps): Promise<React
             className="rounded-lg border border-teal-800 bg-teal-950/40 px-4 py-3 hover:border-teal-600"
           >
             <span className="block text-xs uppercase tracking-wider text-teal-600">
-              Try it
+              Free, no account required
             </span>
             <span className="mt-1 block font-medium text-teal-300">
-              Open the editor — free, no account
+              Open Editor
             </span>
           </Link>
         </div>

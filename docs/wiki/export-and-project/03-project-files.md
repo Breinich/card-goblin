@@ -7,9 +7,10 @@ summary: Export your project as a file and import it back — backup, moving mac
 # Project files
 
 **Export project** in the status bar downloads your whole project as a single
-file; **Import project** loads one back. That's the entire feature — and it's
-how you back a project up, move it to another browser or machine, hand it to a
-friend, or keep more than one project at once.
+file. **New / Open Project → Load project file** loads one back and asks for an
+editable project name before anything changes. This is how you back a project
+up, move it to another browser or machine, hand it to a friend, or begin a new
+named project from an existing file.
 
 ## What's in the file
 
@@ -21,6 +22,7 @@ Everything the editor would need to pick up where you left off:
   (they resurface if the column comes back),
 - every [uploaded asset](04-assets.md) in your Assets drawer — the
   art itself, not a reference to it, so the file is self-contained,
+- the editable project name when the exporting version supplies one,
 - a format version, so future versions of CardGoblin can keep reading old files.
 
 The code-and-sheets part is the exact same shape
@@ -45,36 +47,35 @@ them — a backup silently missing its art isn't a backup.
 
 ## Import
 
-**Import project** opens a file picker. Two things can happen:
+Choose **New / Open Project**, then **Choose project file**. Two things can happen:
 
 - **The file isn't a readable CardGoblin project** — wrong file, damaged, or
-  from an incompatible future version. The status bar says so, and your current
+  from an incompatible future version. The chooser says so, and your current
   project is untouched. Import is all-or-nothing: it never half-loads a file
   (a damaged asset entry invalidates the whole file, same as a damaged sheet
   row).
-- **The file is valid** — the status bar asks
-  **Replace your project (and your uploaded assets) with "\<file\>"?** first,
-  because importing is destructive: there is one project slot and one asset
-  library, and the file *replaces* both. If the current project or its
-  uploads matter, export first.
+- **The file is valid** — the chooser suggests its embedded name (or the file
+  name) and lets you edit it. Anonymous users replacing their active browser
+  project receive an inline two-step warning and should export first if they
+  still need that project. Signed-in administrators create a new cloud project;
+  they do not overwrite an arbitrary existing one.
 
-After you confirm, the imported project is live immediately — and about a
-second later it becomes the autosaved project too, just as if you'd typed it
-(its assets, meanwhile, are already saved — see [Autosave](02-autosave.md)).
-Reloading brings back the import, not what you had before.
+After content and assets have both been written and read back successfully, one
+small active-project pointer changes and the import becomes live. A failure
+leaves the project you were editing untouched. Reloading offers the new browser
+project through **Continue browser project**.
 
 ### Older files still import
 
-A file exported before uploaded assets existed has no art in it — importing
-one is exactly like it always was, except your asset library is now cleared
-too (there's nothing in the file to replace it with, and import always
-replaces). Files this app has ever exported keep opening in every later
-version.
+A file exported before uploaded assets existed has no art in it. Current v1
+and v2 files still import, including grandfathered image MIME types, empty
+assets, and long asset names that the older local library permitted. Those
+legacy assets remain recoverable and exportable locally; new uploads use the
+current reviewed image policy.
 
 ## More than one project
 
-Files are the multi-project story for now: the editor still has a single slot
-(see [Autosave](02-autosave.md)), so keeping several projects means keeping
-several `.cardgoblin.json` files and importing the one you want to work on.
-There is no public account or hosted project list; project files are the supported
-way to keep several projects or move one between browsers.
+Anonymous editing keeps one active browser project and portable files remain
+the backup/move boundary. Administrators authenticated at `/admin` also see a
+named cloud-project list in the chooser and can return to those projects from
+another device.

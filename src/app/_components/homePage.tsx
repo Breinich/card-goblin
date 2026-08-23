@@ -85,7 +85,7 @@ function Hero(): ReactElement {
               href="/editor"
               className="rounded-xl bg-teal-500 px-6 py-3 text-lg font-semibold text-gray-900 shadow-lg shadow-teal-500/20 hover:bg-teal-400"
             >
-              Start editing
+              Open Editor
             </Link>
             <Link
               href="/docs/quickstart"
@@ -95,8 +95,8 @@ function Hero(): ReactElement {
             </Link>
           </div>
           <p className="mt-4 text-sm text-gray-500">
-            No account required, no install. Your project stays in this browser&apos;s
-            local storage unless you export it.
+            No account required, no install. Anonymous projects stay in this browser
+            unless you export them.
           </p>
         </div>
 
@@ -297,7 +297,7 @@ function FinalCta(): ReactElement {
           Your deck is mostly data wearing a layout
         </h2>
         <p className="mx-auto mt-4 max-w-xl text-lg text-gray-400">
-          Stop editing sixty cards by hand. The editor opens with a working demo deck —
+          Stop editing sixty cards by hand. Choose a starter or import a project, then
           change a number and watch it ripple.
         </p>
         <div className="mt-8 flex flex-wrap justify-center gap-3">
@@ -305,7 +305,7 @@ function FinalCta(): ReactElement {
             href="/editor"
             className="rounded-xl bg-teal-500 px-6 py-3 text-lg font-semibold text-gray-900 shadow-lg shadow-teal-500/20 hover:bg-teal-400"
           >
-            Start editing — it&apos;s free
+            Open Editor
           </Link>
           <Link
             href="/docs"

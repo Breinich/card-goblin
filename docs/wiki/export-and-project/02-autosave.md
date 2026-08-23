@@ -26,10 +26,10 @@ editor restores the broken code, squiggles and all — not some older working ve
 
 Images you upload through the **Assets** drawer aren't part of the save above. They
 write to IndexedDB **the moment you upload them**, not on the 1-second debounce, and
-survive a reload. **Reset to demo** and project-file **import** clear the
-code-and-sheets slot and the asset library together, but they are separate stores
-under the hood. That is also why an old, asset-free project file can restore its
-code while clearing your uploads — see [Project files](03-project-files.md).
+survive a reload. Opening or importing another project switches its code, sheets,
+and asset library together, even though those are separate stores under the hood.
+That is also why an old, asset-free project file opens with no uploads — see
+[Project files](03-project-files.md).
 
 ## Cache is not storage
 
@@ -41,18 +41,17 @@ between browsers. Browser settings often group cache, cookies, localStorage, and
 IndexedDB under **site data**; clearing all site data removes the autosave and
 uploaded assets.
 
-## Reset to demo
+## New / Open Project
 
-**Reset to demo** in the status bar wipes the saved project and your uploaded assets,
-then loads the demo deck. It asks before doing it, because there is only one project
-slot and one asset library: the demo *replaces* your work.
+**New / Open Project** in the status bar returns to the project chooser. The active
+project stays untouched while the chooser is open and until another project finishes
+loading. Use **Cancel** to keep editing it.
 
 ## The limits
 
-- **One project, one browser.** A single save slot, tied to this browser profile.
-  Another browser, another device, or a private window starts from the demo. To
-  move a project across, or to keep several, export and import
-  [project files](03-project-files.md).
+- **Browser-local means this browser.** Another browser, another device, or a
+  private window cannot read a local project. To move local work across, export
+  and import [project files](03-project-files.md).
 - **Two tabs fight.** With the editor open in two tabs, the tab that changed last
   wins; the other tab's changes are gone on its next load.
 - **It's browser storage, not a backup.** Clearing site data deletes the project.

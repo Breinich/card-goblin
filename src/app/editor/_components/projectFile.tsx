@@ -2,7 +2,8 @@
 
 /**
  * Project file export/import (DESIGN.md §7.1, §7.1b — M3): the status bar's
- * "Export project" / "Import project" pair.
+ * Portable project-file export/import controls. The named-project editor uses
+ * Export here and routes Import through its blocking New / Open chooser.
  *
  * **v2 (§7.1b, current export format):** `{version: 2, code, sheets, assets}`
  * — self-contained, art included. `assets` is `{name: {mime, bytes: base64}}`,
@@ -11,10 +12,9 @@
  * no `assets` key — the SAME shape persistence.ts's autosave slot still
  * writes) import forever; importing one CLEARS the asset library, consistent
  * with "import replaces the whole project" (there is nothing to carry over).
- * `parsePersisted`/`PERSIST_VERSION`/`sheetsToPersisted`/`parseSheetsPayload`
- * are REUSED from persistence.ts rather than duplicated — the v1 shape and
- * its validation rules are one source of truth; only the v2 envelope
- * (`assets`, `version: 2`) is new, owned here.
+ * The portable codec lives in projectFileFormat.ts and shares the same pure
+ * sheet-shape parser as persistence/cloud without importing their connected
+ * stores. This component re-exports that public surface for compatibility.
  *
  * Decisions beyond §7.1/§7.1b's literal text (each mirrored in the wiki page):
  * - Filename derives from the CURRENT compile's model (after a flush), not
@@ -45,182 +45,39 @@
  *   reset per pick so re-choosing the same file fires `change` again.
  * - `initialError` / `initialPending` are test seams (no interaction driver
  *   in this project) so all three states render statically — the same pattern
- *   as ResetToDemoButton's `initialConfirming`.
+ *   as the editor's other static-render state seams.
  */
 
 import { useRef, useState, type ReactElement } from "react";
-import type { RenderModel } from "@/lib/lang";
 import {
   editorStore,
   type EditorSeed,
-  type SheetsState,
 } from "@/app/editor/_store/editorStore";
 import {
-  isRecord,
-  parsePersisted,
-  parseSheetsPayload,
-  PERSIST_VERSION,
-  sheetsToPersisted,
-} from "@/app/editor/_store/persistence";
-import {
-  ASSET_MAX_BYTES,
   assetStore,
-  isImageMime,
-  isValidAssetName,
   type AssetStore,
+  type AssetStoreSnapshot,
   type StoredAsset,
 } from "@/app/editor/_store/assetStore";
+import { projectLifecycle } from "@/app/editor/_store/projectLifecycle";
+import {
+  buildProjectExport,
+  IMPORT_INVALID_MESSAGE,
+  parseImportedProjectFile,
+  type ParsedProjectFile,
+} from "@/app/editor/_lib/projectFileFormat";
 
-// ---------------------------------------------------------------------------
-// Pure helpers (exported for tests)
-// ---------------------------------------------------------------------------
-
-/** §7.1: `cardgoblin-project.cardgoblin.json`, except a model with exactly one
- * Card block → `<deckname>.cardgoblin.json`. Same sanitization as the PDF's
- * `pdfFileName` (§6.1) — deck names are Goblin identifiers, so the regex only
- * fires on models built outside the compiler. */
-export function projectFileName(model: RenderModel | null): string {
-  const fallback = "cardgoblin-project.cardgoblin.json";
-  if (model === null || model.decks.length !== 1) return fallback;
-  const cleaned = model.decks[0].cardName.replace(/[^\w-]+/g, "_").replace(/^_+|_+$/g, "");
-  return cleaned.length > 0 ? `${cleaned}.cardgoblin.json` : fallback;
-}
-
-/** The project-file format version (§7.1b) — distinct from persistence.ts's
- * `PERSIST_VERSION` (still 1: the autosave slot's shape never changed). A
- * file's `version` field says which shape to expect: 1 (no `assets`) or 2. */
-export const PROJECT_FILE_VERSION = 2;
-
-/** One asset entry inside a v2 file's `assets` object. */
-interface PersistedAssetV2 {
-  mime: string;
-  bytes: string; // base64, pre-encoding size ≤ ASSET_MAX_BYTES
-}
-
-/** Byte-exact base64 encode, chunked to avoid `String.fromCharCode`'s
- * argument-count ceiling on large art (same technique as pdfRaster.tsx's
- * font-embedding encoder — independent copy, different data). */
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = "";
-  const CHUNK = 0x8000;
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
-  }
-  return btoa(binary);
-}
-
-/** The inverse — null on anything `atob` rejects as not-base64. */
-function base64ToBytes(base64: string): Uint8Array | null {
-  let binary: string;
-  try {
-    binary = atob(base64);
-  } catch {
-    return null;
-  }
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
-}
-
-async function assetBytes(asset: StoredAsset): Promise<Uint8Array> {
-  return asset.bytes instanceof Blob
-    ? new Uint8Array(await asset.bytes.arrayBuffer())
-    : asset.bytes;
-}
-
-/** The whole export (§7.1b: async — gathering asset bytes is): the v2
- * payload (code, sheets, base64 assets) plus the §7.1 filename. `assets`
- * comes from the caller already resolved to bytes (exportEditorProject reads
- * them from the asset store); this function just encodes and serializes. */
-export async function buildProjectExport(
-  code: string,
-  sheets: SheetsState,
-  model: RenderModel | null,
-  assets: readonly StoredAsset[] = [],
-): Promise<{ filename: string; json: string }> {
-  const persistedAssets: Record<string, PersistedAssetV2> = {};
-  for (const asset of assets) {
-    persistedAssets[asset.name] = {
-      mime: asset.mime,
-      bytes: bytesToBase64(await assetBytes(asset)),
-    };
-  }
-  const json = JSON.stringify({
-    version: PROJECT_FILE_VERSION,
-    code,
-    sheets: sheetsToPersisted(sheets),
-    assets: persistedAssets,
-  });
-  return { filename: projectFileName(model), json };
-}
-
-/** §7.1's one import error: validation is all-or-nothing (no partial
- * restores, §6.2 — extended to `assets`), so every invalid class gets the
- * same honest message. */
-export const IMPORT_INVALID_MESSAGE =
-  "Not a readable CardGoblin project file — nothing was imported.";
-
-/** A parsed project file, ready to commit — `assets` is empty for a v1 file
- * (§7.1b: importing one clears the library; there is nothing to carry). */
-export interface ParsedProjectFile {
-  seed: EditorSeed;
-  assets: StoredAsset[];
-}
-
-function parseAssetsPayload(raw: Record<string, unknown>): StoredAsset[] | null {
-  const assets: StoredAsset[] = [];
-  for (const [name, entry] of Object.entries(raw)) {
-    if (!isValidAssetName(name)) return null;
-    if (!isRecord(entry) || typeof entry.mime !== "string" || typeof entry.bytes !== "string") {
-      return null;
-    }
-    // m8: same mime rule assetStore.upload enforces — a v2 file (hand-edited
-    // or from a foreign tool) must not be able to smuggle a non-image asset
-    // past import just because it skipped the drawer's upload path.
-    if (!isImageMime(entry.mime)) return null;
-    const bytes = base64ToBytes(entry.bytes);
-    // The cap is enforced at upload time (assetStore.upload) — re-checking
-    // it here keeps "every asset in the library is ≤ 2 MB" true for a
-    // hand-edited or otherwise foreign file too, not just ones this app
-    // produced.
-    if (bytes === null || bytes.byteLength > ASSET_MAX_BYTES) return null;
-    assets.push({ name, mime: entry.mime, bytes });
-  }
-  return assets;
-}
-
-function parseProjectFileV2(payload: Record<string, unknown>): ParsedProjectFile | null {
-  if (typeof payload.code !== "string" || !isRecord(payload.sheets) || !isRecord(payload.assets)) {
-    return null;
-  }
-  const sheets = parseSheetsPayload(payload.sheets);
-  if (sheets === null) return null;
-  const assets = parseAssetsPayload(payload.assets);
-  if (assets === null) return null;
-  return { seed: { code: payload.code, sheets }, assets };
-}
-
-/** Validate a picked file's text (§7.1b: v1 OR v2) → a store seed + assets,
- * or the inline error. Never throws, never touches the store. */
-export function parseImportedProjectFile(raw: string): ParsedProjectFile | { error: string } {
-  let payload: unknown;
-  try {
-    payload = JSON.parse(raw);
-  } catch {
-    return { error: IMPORT_INVALID_MESSAGE };
-  }
-  if (!isRecord(payload)) return { error: IMPORT_INVALID_MESSAGE };
-  if (payload.version === PERSIST_VERSION) {
-    // v1: the SAME shape/rules as the autosave slot — reuse verbatim rather
-    // than re-implementing them (module note).
-    const seed = parsePersisted(raw);
-    return seed ? { seed, assets: [] } : { error: IMPORT_INVALID_MESSAGE };
-  }
-  if (payload.version === PROJECT_FILE_VERSION) {
-    return parseProjectFileV2(payload) ?? { error: IMPORT_INVALID_MESSAGE };
-  }
-  return { error: IMPORT_INVALID_MESSAGE };
-}
+// Preserve the original public surface while keeping the codec itself free of
+// React and editor/browser singletons for startup and build-time consumers.
+export {
+  buildProjectExport,
+  IMPORT_INVALID_MESSAGE,
+  PROJECT_FILE_VERSION,
+  parseImportedProjectFile,
+  parsePortableProjectName,
+  projectFileName,
+  type ParsedProjectFile,
+} from "@/app/editor/_lib/projectFileFormat";
 
 // ---------------------------------------------------------------------------
 // Singleton-store actions (browser click handlers — same shape as
@@ -236,6 +93,8 @@ export class ExportAbortedError extends Error {}
 
 export const EXPORT_ASSETS_UNREADABLE_MESSAGE =
   "Couldn't read your uploaded images — export aborted so you don't get a backup without them. Reload and try again.";
+export const EXPORT_PROJECT_CHANGED_MESSAGE =
+  "The project changed while its backup was being prepared. Export again to capture one consistent version.";
 
 /** Every asset the snapshot lists, bytes resolved — complete or throw
  * (ExportAbortedError). `getBytes` answers null, never throws, BOTH for a
@@ -247,11 +106,20 @@ export const EXPORT_ASSETS_UNREADABLE_MESSAGE =
  * (no IndexedDB in the headless suite). */
 export async function collectExportAssets(
   store: Pick<AssetStore, "getSnapshot" | "getBytes"> = assetStore,
+  expectedSnapshot: AssetStoreSnapshot = store.getSnapshot(),
 ): Promise<StoredAsset[]> {
   const assets: StoredAsset[] = [];
-  for (const meta of store.getSnapshot().assets) {
+  for (const meta of expectedSnapshot.assets) {
     const asset = await store.getBytes(meta.name);
-    if (asset === null) throw new ExportAbortedError(EXPORT_ASSETS_UNREADABLE_MESSAGE);
+    const size = asset?.bytes instanceof Blob ? asset.bytes.size : asset?.bytes.byteLength;
+    if (
+      asset === null ||
+      asset.name !== meta.name ||
+      asset.mime !== meta.mime ||
+      size !== meta.size
+    ) {
+      throw new ExportAbortedError(EXPORT_ASSETS_UNREADABLE_MESSAGE);
+    }
     assets.push(asset);
   }
   return assets;
@@ -263,13 +131,28 @@ export async function collectExportAssets(
  * file missing any listed asset. */
 export async function exportEditorProject(): Promise<void> {
   editorStore.getState().flushCompile();
-  const { code, sheets, compile } = editorStore.getState();
-  const assets = await collectExportAssets();
+  const editorBefore = editorStore.getState();
+  const projectBefore = projectLifecycle.getSnapshot().activeProject;
+  const assetsBefore = assetStore.getSnapshot();
+  const assets = await collectExportAssets(assetStore, assetsBefore);
+  const editorAfter = editorStore.getState();
+  const projectAfter = projectLifecycle.getSnapshot().activeProject;
+  if (
+    assetStore.getSnapshot() !== assetsBefore ||
+    editorAfter.code !== editorBefore.code ||
+    editorAfter.sheets !== editorBefore.sheets ||
+    projectAfter?.id !== projectBefore?.id ||
+    projectAfter?.location !== projectBefore?.location ||
+    projectAfter?.name !== projectBefore?.name
+  ) {
+    throw new ExportAbortedError(EXPORT_PROJECT_CHANGED_MESSAGE);
+  }
   const { filename, json } = await buildProjectExport(
-    code,
-    sheets,
-    compile?.model ?? null,
+    editorBefore.code,
+    editorBefore.sheets,
+    editorBefore.compile?.model ?? null,
     assets,
+    projectBefore?.name,
   );
   downloadJson(json, filename);
 }
@@ -316,6 +199,9 @@ export interface ProjectFileButtonsProps {
   initialError?: string | null;
   /** Test seam: render the armed confirm state statically. */
   initialPending?: PendingImport | null;
+  /** Named-project lifecycle routes imports through its chooser so the user
+   * must supply metadata and the load can be staged atomically. */
+  showImport?: boolean;
 }
 
 /** m7: the export path (async since §7.1b — gathering asset bytes from IDB
@@ -341,19 +227,22 @@ const QUIET_BUTTON =
   "rounded border border-gray-700 px-1.5 text-gray-400 hover:border-gray-500 hover:text-gray-200";
 
 /**
- * "Export project" / "Import project" for the status bar's right-hand group
- * (§7.1, §7.1b). Store-free — the connected StatusBar injects the singleton
- * actions above, tests inject spies. Import's destructive click is always
- * the second, differently colored one (same rule as ResetToDemoButton).
+ * Portable Export and the legacy inline Import control (§7.1, §7.1b).
+ * `showImport={false}` is the named-project status-bar posture; the chooser
+ * owns naming and atomic import. Tests and older embedded callers can retain
+ * the self-contained inline import surface.
  */
 export function ProjectFileButtons({
   onExport,
   onImport,
   initialError = null,
   initialPending = null,
+  showImport = true,
 }: ProjectFileButtonsProps): ReactElement {
   const [error, setError] = useState<string | null>(initialError);
-  const [pending, setPending] = useState<PendingImport | null>(initialPending);
+  const [pending, setPending] = useState<PendingImport | null>(
+    showImport ? initialPending : null,
+  );
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handleFile = async (file: File): Promise<void> => {
@@ -426,27 +315,31 @@ export function ProjectFileButtons({
       >
         Export project
       </button>
-      <button
-        type="button"
-        onClick={() => inputRef.current?.click()}
-        title="Load a .cardgoblin.json file, replacing this project and its assets"
-        className={QUIET_BUTTON}
-      >
-        Import project
-      </button>
-      <input
-        ref={inputRef}
-        type="file"
-        accept=".json,application/json"
-        className="hidden"
-        onChange={(event) => {
-          const file = event.currentTarget.files?.[0];
-          // Reset per pick (module note) BEFORE the async read detaches us
-          // from the pooled event.
-          event.currentTarget.value = "";
-          if (file !== undefined) void handleFile(file);
-        }}
-      />
+      {showImport && (
+        <>
+          <button
+            type="button"
+            onClick={() => inputRef.current?.click()}
+            title="Load a .cardgoblin.json file, replacing this project and its assets"
+            className={QUIET_BUTTON}
+          >
+            Import project
+          </button>
+          <input
+            ref={inputRef}
+            type="file"
+            accept=".json,application/json"
+            className="hidden"
+            onChange={(event) => {
+              const file = event.currentTarget.files?.[0];
+              // Reset per pick (module note) BEFORE the async read detaches us
+              // from the pooled event.
+              event.currentTarget.value = "";
+              if (file !== undefined) void handleFile(file);
+            }}
+          />
+        </>
+      )}
     </span>
   );
 }

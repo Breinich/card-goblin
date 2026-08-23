@@ -187,7 +187,7 @@ export interface PdfExportModalProps {
   /** Injection seam for tests (default: the real browser image loader). */
   resolveImages?: ResolveImages;
   /** Test seams (no interaction driver in this project, same pattern as
-   * ResetToDemoButton's `initialConfirming`): seed the margin/spacing text
+   * the editor's other static-render seams): seed the margin/spacing text
    * fields and the failure banner so their states render statically instead
    * of needing a simulated typing/click flow. */
   initialMarginText?: string;

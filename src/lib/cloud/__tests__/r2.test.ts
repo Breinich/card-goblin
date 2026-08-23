@@ -17,6 +17,7 @@ import {
   getCloudStorage,
   loadR2ConfigFromEnv,
   parseListObjectsXml,
+  parseListObjectsPageXml,
   resetCloudStorageForTests,
   setCloudStorageForTests,
 } from "../r2";
@@ -151,6 +152,27 @@ describe("createInMemoryCloudStorage", () => {
     expect(assets.find((o) => o.key.endsWith("imp"))?.size).toBe(3);
   });
 
+  it("listPage folds descendants by delimiter and follows stable continuation offsets", async () => {
+    const storage = createInMemoryCloudStorage();
+    for (const id of ["a", "b", "c"]) {
+      await storage.putObject(`projects/${id}/project.json`, new Uint8Array([1]), "application/json");
+      await storage.putObject(`projects/${id}/assets/hash`, new Uint8Array([2]), "application/octet-stream");
+    }
+
+    const first = await storage.listPage({ prefix: "projects/", delimiter: "/", maxKeys: 2 });
+    expect(first.objects).toEqual([]);
+    expect(first.commonPrefixes).toEqual(["projects/a/", "projects/b/"]);
+    expect(first.nextContinuationToken).not.toBeNull();
+    const second = await storage.listPage({
+      prefix: "projects/",
+      delimiter: "/",
+      maxKeys: 2,
+      continuationToken: first.nextContinuationToken!,
+    });
+    expect(second.commonPrefixes).toEqual(["projects/c/"]);
+    expect(second.nextContinuationToken).toBeNull();
+  });
+
   it("presignPut/presignGet resolve to SOME url (shape only — real signing is r2.ts's job, not the fake's)", async () => {
     const storage = createInMemoryCloudStorage();
     await expect(storage.presignPut("k", "image/png", 1234, 60)).resolves.toContain("k");
@@ -213,6 +235,20 @@ describe("parseListObjectsXml", () => {
     const xml = `<Contents><Key>k</Key></Contents>`;
     expect(parseListObjectsXml(xml)).toEqual([{ key: "k", etag: "", size: 0 }]);
   });
+
+  it("parses delimiter prefixes and an opaque continuation token", () => {
+    const xml = `<ListBucketResult>
+      <IsTruncated>true</IsTruncated>
+      <NextContinuationToken>opaque&amp;token</NextContinuationToken>
+      <CommonPrefixes><Prefix>projects/a/</Prefix></CommonPrefixes>
+      <CommonPrefixes><Prefix>projects/b/</Prefix></CommonPrefixes>
+    </ListBucketResult>`;
+    expect(parseListObjectsPageXml(xml)).toEqual({
+      objects: [],
+      commonPrefixes: ["projects/a/", "projects/b/"],
+      nextContinuationToken: "opaque&token",
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -240,6 +276,26 @@ describe("createR2Storage — presigned URL signing (L4)", () => {
         const signedHeaders = new URL(url).searchParams.get("X-Amz-SignedHeaders");
         expect(signedHeaders).toBe("content-length;content-type;host");
       });
+  });
+
+  it("presignPut: immutable creates additionally sign If-None-Match without changing legacy callers", async () => {
+    const storage = createR2Storage(config);
+    const immutable = new URL(
+      await storage.presignPut(
+        "projects/123e4567-e89b-42d3-a456-426614174000/assets/" + "ab".repeat(32),
+        "image/png",
+        1234,
+        300,
+        { onlyIfAbsent: true },
+      ),
+    );
+    expect(immutable.searchParams.get("X-Amz-SignedHeaders")).toBe(
+      "content-length;content-type;host;if-none-match",
+    );
+    const legacy = new URL(await storage.presignPut("legacy", "image/png", 1, 300));
+    expect(legacy.searchParams.get("X-Amz-SignedHeaders")).toBe(
+      "content-length;content-type;host",
+    );
   });
 
   it("presignPut: a DIFFERENT TTL is reflected exactly (not hardcoded)", async () => {
@@ -413,6 +469,65 @@ describe("createR2Storage — server-side request shape and diagnostics", () => 
       status: 404,
       code: "NoSuchBucket",
     });
+  });
+
+  it("list follows every ListObjectsV2 continuation page without a 1000-object cap", async () => {
+    const seen: Request[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const request = input instanceof Request ? input : new Request(input);
+        seen.push(request);
+        const token = new URL(request.url).searchParams.get("continuation-token");
+        if (token === null) {
+          return new Response(
+            `<ListBucketResult><IsTruncated>true</IsTruncated>
+              <NextContinuationToken>page&amp;2</NextContinuationToken>
+              <Contents><Key>projects/a/project.json</Key><ETag>"a"</ETag><Size>1</Size></Contents>
+            </ListBucketResult>`,
+          );
+        }
+        return new Response(
+          `<ListBucketResult><IsTruncated>false</IsTruncated>
+            <Contents><Key>projects/b/project.json</Key><ETag>"b"</ETag><Size>2</Size></Contents>
+          </ListBucketResult>`,
+        );
+      }),
+    );
+
+    const listed = await createR2Storage(config).list("projects/");
+    expect(listed.map((entry) => entry.key)).toEqual([
+      "projects/a/project.json",
+      "projects/b/project.json",
+    ]);
+    expect(seen).toHaveLength(2);
+    expect(new URL(seen[0].url).searchParams.get("list-type")).toBe("2");
+    expect(new URL(seen[1].url).searchParams.get("continuation-token")).toBe("page&2");
+    expect(seen.every((request) => request.cache === "no-store")).toBe(true);
+  });
+
+  it("listPage sends delimiter/max-keys and fails closed on a truncated page missing its token", async () => {
+    let seen: Request | null = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        seen = input instanceof Request ? input : new Request(input);
+        return new Response(`<ListBucketResult><IsTruncated>true</IsTruncated></ListBucketResult>`);
+      }),
+    );
+
+    const result = createR2Storage(config).listPage({
+      prefix: "projects/",
+      delimiter: "/",
+      maxKeys: 1000,
+    });
+    await expect(result).rejects.toMatchObject({
+      operation: "LIST",
+      code: "MissingContinuationToken",
+    });
+    expect(seen).not.toBeNull();
+    expect(new URL(seen!.url).searchParams.get("delimiter")).toBe("/");
+    expect(new URL(seen!.url).searchParams.get("max-keys")).toBe("1000");
   });
 });
 

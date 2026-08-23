@@ -266,8 +266,8 @@ export function initEditorPersistence(): void {
   });
 }
 
-/** The status bar's reset affordance. Falls back to a plain reseed when
- * persistence never attached (SSR, blocked storage) — the button must work
+/** Legacy reset helper retained for compatibility tests. Falls back to a plain
+ * reseed when persistence never attached (SSR, blocked storage) — it must work
  * even where autosave doesn't. Either way the §7.1b asset library clears too
  * (independent of whether the localStorage controller ever attached). */
 export function resetEditorToDemo(): void {

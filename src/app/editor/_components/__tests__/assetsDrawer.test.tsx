@@ -3,7 +3,7 @@
  * `assetReference`) and the store-free `AssetsDrawerContent`'s static markup
  * states — empty, populated, disabled, error, confirm-delete, and renaming —
  * rendered via the `initial*` test seams (no interaction driver in this
- * project, same pattern as ResetToDemoButton/ProjectFileButtons/
+ * project, same two-step pattern as ProjectFileButtons/
  * PdfExportModal). Actions are spies; nothing here talks to a real store.
  */
 import { describe, expect, it, vi } from "vitest";
@@ -99,6 +99,28 @@ describe("AssetsDrawerContent — empty state", () => {
   });
 });
 
+describe("AssetsDrawerContent — storage reality", () => {
+  it("distinguishes local-only assets from an active cloud project's synced assets", () => {
+    const local = stripTags(renderToStaticMarkup(
+      <AssetsDrawerContent assets={[]} disabled={false} onClose={() => {}} {...noopActions} />,
+    ));
+    expect(local).toContain("These images stay on this computer");
+    expect(local).toContain("are not uploaded");
+
+    const cloud = stripTags(renderToStaticMarkup(
+      <AssetsDrawerContent
+        assets={[]}
+        disabled={false}
+        cloudBacked
+        onClose={() => {}}
+        {...noopActions}
+      />,
+    ));
+    expect(cloud).toContain("These images sync with this cloud project");
+    expect(cloud).not.toContain("are not uploaded");
+  });
+});
+
 describe("AssetsDrawerContent — populated state", () => {
   it("lists every asset with a rename trigger, copy-reference, and delete button", () => {
     const markup = renderToStaticMarkup(
@@ -148,7 +170,7 @@ describe("AssetsDrawerContent — upload error (test seam)", () => {
   });
 });
 
-describe("AssetsDrawerContent — delete confirm (test seam, two-step like ResetToDemoButton)", () => {
+describe("AssetsDrawerContent — delete confirm (two-step static-render seam)", () => {
   it("arms the destructive confirm for exactly the targeted asset", () => {
     const markup = renderToStaticMarkup(
       <AssetsDrawerContent

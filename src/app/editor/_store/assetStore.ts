@@ -56,6 +56,23 @@ export function isValidAssetName(name: string): boolean {
  * Guarded bidirectionally against the wiki by docFacts.test.ts. */
 export const ASSET_MAX_BYTES = 2 * 1024 * 1024;
 
+/** Prospective project assets share the reviewed cloud boundary exactly. */
+export const ASSET_MAX_NAME_LENGTH = 100;
+export const SUPPORTED_ASSET_MIMES = Object.freeze([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "image/avif",
+  "image/svg+xml",
+] as const);
+
+const supportedAssetMimes = new Set<string>(SUPPORTED_ASSET_MIMES);
+
+export function isSupportedAssetMime(mime: string): boolean {
+  return supportedAssetMimes.has(mime);
+}
+
 function formatBytes(n: number): string {
   return n >= 1024 * 1024 ? `${(n / (1024 * 1024)).toFixed(1)} MB` : `${Math.ceil(n / 1024)} KB`;
 }
@@ -110,6 +127,50 @@ function byteLengthOf(bytes: Blob | Uint8Array): number {
   return bytes instanceof Blob ? bytes.size : bytes.byteLength;
 }
 
+function isStoredAssetBytes(value: unknown): value is Blob | Uint8Array {
+  return value instanceof Uint8Array || (typeof Blob !== "undefined" && value instanceof Blob);
+}
+
+/**
+ * The pre-project-lifecycle acceptance boundary. Project-file import and v1
+ * IndexedDB recovery deliberately use this predicate: a valid historical
+ * record may have an arbitrary image/* subtype, zero bytes, or an identifier
+ * longer than the prospective 100-character cap.
+ */
+export function isLegacyCompatibleAsset(asset: unknown): asset is StoredAsset {
+  if (typeof asset !== "object" || asset === null) return false;
+  const candidate = asset as Partial<StoredAsset>;
+  return (
+    typeof candidate.name === "string" &&
+    isValidAssetName(candidate.name) &&
+    typeof candidate.mime === "string" &&
+    isImageMime(candidate.mime) &&
+    isStoredAssetBytes(candidate.bytes) &&
+    byteLengthOf(candidate.bytes) <= ASSET_MAX_BYTES
+  );
+}
+
+/** Exact new-ingestion policy used by project-scoped stores and templates. */
+export function isValidNewAsset(asset: unknown): asset is StoredAsset {
+  if (typeof asset !== "object" || asset === null) return false;
+  const candidate = asset as Partial<StoredAsset>;
+  if (
+    typeof candidate.name !== "string" ||
+    typeof candidate.mime !== "string" ||
+    !isStoredAssetBytes(candidate.bytes)
+  ) {
+    return false;
+  }
+  const size = byteLengthOf(candidate.bytes);
+  return (
+    isValidAssetName(candidate.name) &&
+    candidate.name.length <= ASSET_MAX_NAME_LENGTH &&
+    isSupportedAssetMime(candidate.mime) &&
+    size > 0 &&
+    size <= ASSET_MAX_BYTES
+  );
+}
+
 function metaOf(asset: StoredAsset): AssetMeta {
   return { name: asset.name, mime: asset.mime, size: byteLengthOf(asset.bytes) };
 }
@@ -121,6 +182,7 @@ function sortedMetas(metas: readonly AssetMeta[]): AssetMeta[] {
 export type AssetErrorCode =
   | "invalid-name"
   | "invalid-mime"
+  | "empty"
   | "too-large"
   | "name-taken"
   | "not-found"
@@ -145,6 +207,9 @@ const invalidNameError = (name: string): AssetStoreError =>
 
 const invalidMimeError = (mime: string): AssetStoreError =>
   new AssetStoreError("invalid-mime", `'${mime || "(empty)"}' isn't an image type.`);
+
+const emptyAssetError = (name: string): AssetStoreError =>
+  new AssetStoreError("empty", `'${name}' is empty — assets must contain at least one byte.`);
 
 const disabledError = (): AssetStoreError =>
   new AssetStoreError(
@@ -207,15 +272,82 @@ export function createInMemoryAssetAdapter(seed: readonly StoredAsset[] = []): A
 // The real IndexedDB adapter (browser-only; hand-rolled, no new deps)
 // ---------------------------------------------------------------------------
 
-const DB_NAME = "cardgoblin-assets";
-const DB_VERSION = 1;
-const STORE_NAME = "assets";
+export const ASSET_DB_NAME = "cardgoblin-assets";
+export const ASSET_DB_VERSION = 2;
+export const LEGACY_ASSET_STORE_NAME = "assets";
+export const PROJECT_ASSET_STORE_NAME = "project-assets";
+export const ASSET_MIGRATION_STORE_NAME = "asset-migrations";
+const PROJECT_ID_INDEX_NAME = "by-project-id";
+
+/** Deterministic scope used only when the user chooses v1 browser recovery. */
+export const LEGACY_BROWSER_ASSET_PROJECT_ID = "legacy-browser-v1";
+
+function assertAssetProjectId(projectId: string): void {
+  if (
+    projectId.length === 0 ||
+    projectId.length > 200 ||
+    /[\u0000-\u001f\u007f-\u009f]/u.test(projectId)
+  ) {
+    throw new Error("Invalid asset project ID.");
+  }
+}
 
 function idbRequest<T>(req: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error ?? new Error("IndexedDB request failed"));
   });
+}
+
+function idbTransactionDone(transaction: IDBTransaction): Promise<void> {
+  return new Promise((resolve, reject) => {
+    transaction.oncomplete = () => resolve();
+    transaction.onabort = () => reject(transaction.error ?? new Error("IndexedDB transaction aborted"));
+    transaction.onerror = () => reject(transaction.error ?? new Error("IndexedDB transaction failed"));
+  });
+}
+
+let assetDatabasePromise: Promise<IDBDatabase> | null = null;
+
+function openAssetDatabase(): Promise<IDBDatabase> {
+  assetDatabasePromise ??= new Promise((resolve, reject) => {
+    const req = indexedDB.open(ASSET_DB_NAME, ASSET_DB_VERSION);
+    let blocked = false;
+    req.onupgradeneeded = () => {
+      const database = req.result;
+      // Existing v1 records stay in this store with the original key path.
+      if (!database.objectStoreNames.contains(LEGACY_ASSET_STORE_NAME)) {
+        database.createObjectStore(LEGACY_ASSET_STORE_NAME, { keyPath: "name" });
+      }
+      // Never change a keyPath in place: project-scoped identity gets a new
+      // v2 store keyed by the immutable project ID plus logical asset name.
+      if (!database.objectStoreNames.contains(PROJECT_ASSET_STORE_NAME)) {
+        const projectAssets = database.createObjectStore(PROJECT_ASSET_STORE_NAME, {
+          keyPath: ["projectId", "name"],
+        });
+        projectAssets.createIndex(PROJECT_ID_INDEX_NAME, "projectId", { unique: false });
+      }
+      if (!database.objectStoreNames.contains(ASSET_MIGRATION_STORE_NAME)) {
+        database.createObjectStore(ASSET_MIGRATION_STORE_NAME, { keyPath: "projectId" });
+      }
+    };
+    req.onsuccess = () => {
+      // If an older tab initially blocked the v2 upgrade, this session has
+      // already taken the disabled/retry posture; do not leak a late handle.
+      if (blocked) {
+        req.result.close();
+        return;
+      }
+      req.result.onversionchange = () => req.result.close();
+      resolve(req.result);
+    };
+    req.onblocked = () => {
+      blocked = true;
+      reject(new Error("IndexedDB upgrade is blocked by another CardGoblin tab"));
+    };
+    req.onerror = () => reject(req.error ?? new Error("IndexedDB open failed"));
+  });
+  return assetDatabasePromise;
 }
 
 /**
@@ -228,23 +360,10 @@ function idbRequest<T>(req: IDBRequest<T>): Promise<T> {
  * same posture as pdfRaster.tsx's DOM-only rasterizer.
  */
 export function createIndexedDbAssetAdapter(): AssetAdapter {
-  let dbPromise: Promise<IDBDatabase> | null = null;
-  const getDb = (): Promise<IDBDatabase> => {
-    dbPromise ??= new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, DB_VERSION);
-      req.onupgradeneeded = () => {
-        if (!req.result.objectStoreNames.contains(STORE_NAME)) {
-          req.result.createObjectStore(STORE_NAME, { keyPath: "name" });
-        }
-      };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error ?? new Error("IndexedDB open failed"));
-    });
-    return dbPromise;
-  };
-
   const store = async (mode: IDBTransactionMode): Promise<IDBObjectStore> =>
-    (await getDb()).transaction(STORE_NAME, mode).objectStore(STORE_NAME);
+    (await openAssetDatabase())
+      .transaction(LEGACY_ASSET_STORE_NAME, mode)
+      .objectStore(LEGACY_ASSET_STORE_NAME);
 
   return {
     async list() {
@@ -277,6 +396,295 @@ export function createIndexedDbAssetAdapter(): AssetAdapter {
       const s = await store("readwrite");
       await idbRequest(s.delete(name));
     },
+  };
+}
+
+interface ProjectScopedStoredAsset extends StoredAsset {
+  projectId: string;
+}
+
+/** An adapter factory closes over one immutable ID; no operation accepts a
+ * mutable/current project ID and therefore cannot drift into another scope. */
+export type ProjectAssetAdapterFactory = (projectId: string) => AssetAdapter;
+
+export function createProjectScopedIndexedDbAssetAdapter(projectId: string): AssetAdapter {
+  assertAssetProjectId(projectId);
+
+  const transaction = async (mode: IDBTransactionMode): Promise<IDBTransaction> =>
+    (await openAssetDatabase()).transaction(PROJECT_ASSET_STORE_NAME, mode);
+  const key = (name: string): [string, string] => [projectId, name];
+
+  return {
+    async list() {
+      const tx = await transaction("readonly");
+      const records = await idbRequest(
+        tx.objectStore(PROJECT_ASSET_STORE_NAME)
+          .index(PROJECT_ID_INDEX_NAME)
+          .getAll(projectId) as IDBRequest<ProjectScopedStoredAsset[]>,
+      );
+      return records.map(({ name, mime, bytes }) => ({ name, mime, bytes }));
+    },
+    async get(name) {
+      const tx = await transaction("readonly");
+      const found = await idbRequest(
+        tx.objectStore(PROJECT_ASSET_STORE_NAME).get(key(name)) as IDBRequest<
+          ProjectScopedStoredAsset | undefined
+        >,
+      );
+      return found ? { name: found.name, mime: found.mime, bytes: found.bytes } : null;
+    },
+    async put(asset) {
+      const tx = await transaction("readwrite");
+      const done = idbTransactionDone(tx);
+      await Promise.all([
+        idbRequest(tx.objectStore(PROJECT_ASSET_STORE_NAME).put({ projectId, ...asset })),
+        done,
+      ]);
+    },
+    async rename(oldName, newName) {
+      const tx = await transaction("readwrite");
+      const store = tx.objectStore(PROJECT_ASSET_STORE_NAME);
+      const existing = await idbRequest(
+        store.get(key(oldName)) as IDBRequest<ProjectScopedStoredAsset | undefined>,
+      );
+      if (!existing) throw new AssetStoreError("not-found", `No asset named '${oldName}'.`);
+      const collision = await idbRequest(
+        store.get(key(newName)) as IDBRequest<ProjectScopedStoredAsset | undefined>,
+      );
+      if (collision) {
+        throw new AssetStoreError("name-taken", `An asset named '${newName}' already exists.`);
+      }
+      const done = idbTransactionDone(tx);
+      await Promise.all([
+        (async () => {
+          await idbRequest(store.delete(key(oldName)));
+          await idbRequest(store.put({ ...existing, projectId, name: newName }));
+        })(),
+        done,
+      ]);
+    },
+    async delete(name) {
+      const tx = await transaction("readwrite");
+      const done = idbTransactionDone(tx);
+      await Promise.all([
+        idbRequest(tx.objectStore(PROJECT_ASSET_STORE_NAME).delete(key(name))),
+        done,
+      ]);
+    },
+  };
+}
+
+/** Headless project-scoping fake. Every adapter captures its project ID and
+ * shares only the database map, making cross-project leakage testable. */
+export function createInMemoryProjectAssetAdapterFactory(): ProjectAssetAdapterFactory {
+  const projects = new Map<string, Map<string, StoredAsset>>();
+  return (projectId) => {
+    assertAssetProjectId(projectId);
+    let table = projects.get(projectId);
+    if (!table) {
+      table = new Map();
+      projects.set(projectId, table);
+    }
+    const boundTable = table;
+    return {
+      async list() {
+        return [...boundTable.values()].map((asset) => ({ ...asset }));
+      },
+      async get(name) {
+        const found = boundTable.get(name);
+        return found ? { ...found } : null;
+      },
+      async put(asset) {
+        boundTable.set(asset.name, { ...asset });
+      },
+      async rename(oldName, newName) {
+        const existing = boundTable.get(oldName);
+        if (!existing) throw new AssetStoreError("not-found", `No asset named '${oldName}'.`);
+        if (boundTable.has(newName)) {
+          throw new AssetStoreError("name-taken", `An asset named '${newName}' already exists.`);
+        }
+        boundTable.delete(oldName);
+        boundTable.set(newName, { ...existing, name: newName });
+      },
+      async delete(name) {
+        boundTable.delete(name);
+      },
+    };
+  };
+}
+
+/** Opt-in store for the new lifecycle. It is not attached or refreshed at
+ * discovery time; bootstrap owns both choices explicitly. */
+export function createProjectScopedAssetStore(
+  projectId: string,
+  adapterFactory: ProjectAssetAdapterFactory = createProjectScopedIndexedDbAssetAdapter,
+  initialRecords: readonly StoredAsset[] = [],
+): AssetStore {
+  return createAssetStore(adapterFactory(projectId), false, "prospective", initialRecords);
+}
+
+export type AssetMigrationAuthority = "pending" | "authoritative";
+
+/** Stored separately from assets so a partially copied namespace is never
+ * mistaken for a committed migration. */
+export interface AssetMigrationStateStore {
+  getState(projectId: string): Promise<AssetMigrationAuthority | null>;
+  setState(projectId: string, state: AssetMigrationAuthority): Promise<void>;
+}
+
+export function createInMemoryAssetMigrationStateStore(): AssetMigrationStateStore {
+  const states = new Map<string, AssetMigrationAuthority>();
+  return {
+    async getState(projectId) {
+      return states.get(projectId) ?? null;
+    },
+    async setState(projectId, state) {
+      states.set(projectId, state);
+    },
+  };
+}
+
+interface StoredAssetMigrationState {
+  projectId: string;
+  state: AssetMigrationAuthority;
+}
+
+export function createIndexedDbAssetMigrationStateStore(): AssetMigrationStateStore {
+  return {
+    async getState(projectId) {
+      assertAssetProjectId(projectId);
+      const tx = (await openAssetDatabase()).transaction(ASSET_MIGRATION_STORE_NAME, "readonly");
+      const found = await idbRequest(
+        tx.objectStore(ASSET_MIGRATION_STORE_NAME).get(projectId) as IDBRequest<
+          StoredAssetMigrationState | undefined
+        >,
+      );
+      return found?.state ?? null;
+    },
+    async setState(projectId, state) {
+      assertAssetProjectId(projectId);
+      const tx = (await openAssetDatabase()).transaction(ASSET_MIGRATION_STORE_NAME, "readwrite");
+      const done = idbTransactionDone(tx);
+      await Promise.all([
+        idbRequest(tx.objectStore(ASSET_MIGRATION_STORE_NAME).put({ projectId, state })),
+        done,
+      ]);
+    },
+  };
+}
+
+async function bytesOf(asset: StoredAsset): Promise<Uint8Array> {
+  return asset.bytes instanceof Blob
+    ? new Uint8Array(await asset.bytes.arrayBuffer())
+    : asset.bytes;
+}
+
+async function cloneAsset(asset: StoredAsset): Promise<StoredAsset> {
+  return {
+    name: asset.name,
+    mime: asset.mime,
+    bytes: asset.bytes instanceof Blob ? asset.bytes : asset.bytes.slice(),
+  };
+}
+
+/** Count/name/MIME/size/bytes read-back verification. Array order is ignored;
+ * adapter identity guarantees names are unique within each project scope. */
+export async function assetLibrariesEqual(
+  expected: readonly StoredAsset[],
+  actual: readonly StoredAsset[],
+): Promise<boolean> {
+  if (expected.length !== actual.length) return false;
+  const actualByName = new Map(actual.map((asset) => [asset.name, asset]));
+  if (actualByName.size !== actual.length) return false;
+  for (const wanted of expected) {
+    const found = actualByName.get(wanted.name);
+    if (
+      !found ||
+      found.mime !== wanted.mime ||
+      byteLengthOf(found.bytes) !== byteLengthOf(wanted.bytes)
+    ) {
+      return false;
+    }
+    const [wantedBytes, foundBytes] = await Promise.all([bytesOf(wanted), bytesOf(found)]);
+    if (
+      wantedBytes.length !== foundBytes.length ||
+      wantedBytes.some((byte, index) => byte !== foundBytes[index])
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export interface LegacyAssetMigrationOptions {
+  /** Defaults to the one deterministic browser-recovery scope. */
+  projectId?: string;
+  /** The untouched v1 `assets` store. */
+  source: AssetAdapter;
+  /** A project-scoped v2 adapter already bound to projectId. */
+  destination: AssetAdapter;
+  state: AssetMigrationStateStore;
+}
+
+export interface LegacyAssetMigrationResult {
+  status: "migrated" | "already-current";
+  projectId: string;
+  assetCount: number;
+  records: StoredAsset[];
+}
+
+/**
+ * Explicit copy-only v1 → project-scope migration. It never runs during
+ * discovery/init and never deletes from v1. The destination is demoted to
+ * pending before any copy, is read back byte-for-byte, and becomes
+ * authoritative only after verification. Retry safely overwrites the same
+ * compound keys and removes stale destination-only names after all writes.
+ */
+export async function migrateLegacyAssetsToProject({
+  projectId = LEGACY_BROWSER_ASSET_PROJECT_ID,
+  source,
+  destination,
+  state,
+}: LegacyAssetMigrationOptions): Promise<LegacyAssetMigrationResult> {
+  assertAssetProjectId(projectId);
+  const previousState = await state.getState(projectId);
+  // Demote before reading source bytes too: an unavailable/corrupt v1 read is
+  // a failed migration and must not leave this attempt marked authoritative.
+  await state.setState(projectId, "pending");
+  const sourceRecords = await source.list();
+  if (!sourceRecords.every(isLegacyCompatibleAsset)) {
+    throw new Error("Legacy asset storage contains an invalid record; nothing was migrated.");
+  }
+
+  const before = await destination.list();
+  if (await assetLibrariesEqual(sourceRecords, before)) {
+    await state.setState(projectId, "authoritative");
+    return {
+      status: previousState === "authoritative" ? "already-current" : "migrated",
+      projectId,
+      assetCount: sourceRecords.length,
+      records: await Promise.all(sourceRecords.map(cloneAsset)),
+    };
+  }
+
+  const sourceNames = new Set(sourceRecords.map((record) => record.name));
+  // Copy before deleting destination-only staging data. A write failure leaves
+  // a recoverable superset and the pending marker prevents activation.
+  for (const record of sourceRecords) await destination.put(await cloneAsset(record));
+  for (const record of before) {
+    if (!sourceNames.has(record.name)) await destination.delete(record.name);
+  }
+
+  const verified = await destination.list();
+  if (!(await assetLibrariesEqual(sourceRecords, verified))) {
+    throw new Error("Legacy asset migration could not be verified.");
+  }
+  await state.setState(projectId, "authoritative");
+  return {
+    status: "migrated",
+    projectId,
+    assetCount: sourceRecords.length,
+    records: await Promise.all(verified.map(cloneAsset)),
   };
 }
 
@@ -339,10 +747,11 @@ export interface AssetStore {
    * a missing name OR a disabled store, never a throw (§3.3's existing
    * "missing asset behaves like a failed URL" contract). */
   getBytes(name: string): Promise<StoredAsset | null>;
-  /** Validates name + mime (must be `image/*`, m8) + the 2 MB cap
-   * (ASSET_MAX_BYTES) before writing — throws AssetStoreError on any
-   * rejection, including re-uploading an existing name (allowed: overwrites,
-   * matching the drawer's "replace" idiom). */
+  /** Validates against this store's ingestion policy before writing. Legacy
+   * v1 stores retain broad image MIME, zero-byte, and unbounded-name
+   * compatibility; explicit project-scoped stores use the exact six MIME
+   * types, nonzero bytes, and 100-character name cap. Re-uploading an
+   * existing name overwrites it. */
   upload(name: string, mime: string, bytes: Blob | Uint8Array): Promise<AssetMeta>;
   /** Not-found/name-taken checks fall back to the ADAPTER on a cache miss
    * (m10) — an un-refreshed cache must never claim "doesn't exist" for
@@ -391,8 +800,15 @@ function metasEqual(a: readonly AssetMeta[], b: readonly AssetMeta[]): boolean {
 }
 
 
-export function createAssetStore(adapter: AssetAdapter, startDisabled = false): AssetStore {
-  let assets: AssetMeta[] = [];
+export type AssetIngestionPolicy = "legacy" | "prospective";
+
+export function createAssetStore(
+  adapter: AssetAdapter,
+  startDisabled = false,
+  ingestionPolicy: AssetIngestionPolicy = "legacy",
+  initialRecords: readonly StoredAsset[] = [],
+): AssetStore {
+  let assets: AssetMeta[] = sortedMetas(initialRecords.map(metaOf));
   let disabled = startDisabled;
   // C1: getSnapshot() must return the SAME object across calls until the
   // state it describes actually changes (useSyncExternalStore's Object.is
@@ -496,8 +912,17 @@ export function createAssetStore(adapter: AssetAdapter, startDisabled = false): 
     async upload(name, mime, bytes) {
       guard();
       if (!isValidAssetName(name)) throw invalidNameError(name);
-      if (!isImageMime(mime)) throw invalidMimeError(mime); // m8
+      if (ingestionPolicy === "prospective" && name.length > ASSET_MAX_NAME_LENGTH) {
+        throw new AssetStoreError(
+          "invalid-name",
+          `'${name}' is too long — asset names are capped at ${ASSET_MAX_NAME_LENGTH} characters.`,
+        );
+      }
+      if (ingestionPolicy === "prospective" ? !isSupportedAssetMime(mime) : !isImageMime(mime)) {
+        throw invalidMimeError(mime);
+      }
       const size = byteLengthOf(bytes);
+      if (ingestionPolicy === "prospective" && size === 0) throw emptyAssetError(name);
       if (size > ASSET_MAX_BYTES) {
         throw new AssetStoreError(
           "too-large",
@@ -518,7 +943,18 @@ export function createAssetStore(adapter: AssetAdapter, startDisabled = false): 
 
     async rename(oldName, newName) {
       guard();
-      if (!isValidAssetName(newName)) throw invalidNameError(newName);
+      const sameName = newName === oldName;
+      // Preserve an existing grandfathered name when no mutation is asked
+      // for. Any genuinely new target name follows the prospective cap.
+      if (!sameName) {
+        if (!isValidAssetName(newName)) throw invalidNameError(newName);
+        if (ingestionPolicy === "prospective" && newName.length > ASSET_MAX_NAME_LENGTH) {
+          throw new AssetStoreError(
+            "invalid-name",
+            `'${newName}' is too long — asset names are capped at ${ASSET_MAX_NAME_LENGTH} characters.`,
+          );
+        }
+      }
       let prior = assets.find((a) => a.name === oldName);
       if (!prior) {
         // m10: an un-refreshed cache must not claim "doesn't exist" for
@@ -528,10 +964,7 @@ export function createAssetStore(adapter: AssetAdapter, startDisabled = false): 
         if (!found) throw new AssetStoreError("not-found", `No asset named '${oldName}'.`);
         prior = metaOf(found);
       }
-      // A same-name "rename" is a no-op, short-circuited here rather than
-      // taught to every adapter: the adapter's own collision check would
-      // otherwise reject it (the record already exists under `oldName`).
-      if (newName === oldName) return;
+      if (sameName) return;
       if (assets.some((a) => a.name === newName)) {
         throw new AssetStoreError("name-taken", `An asset named '${newName}' already exists.`);
       }
@@ -628,7 +1061,12 @@ export function createAssetStore(adapter: AssetAdapter, startDisabled = false): 
  * and `resetAssetStoreForTests` share one implementation. */
 function makeSingleton(): {
   store: AssetStore;
-  attach(adapter: AssetAdapter, startDisabled: boolean): void;
+  attach(
+    adapter: AssetAdapter,
+    startDisabled: boolean,
+    ingestionPolicy?: AssetIngestionPolicy,
+    initialRecords?: readonly StoredAsset[],
+  ): void;
 } {
   let active = createAssetStore(createInMemoryAssetAdapter(), false);
   const forwardedListeners = new Set<(event: AssetChangeEvent) => void>();
@@ -656,12 +1094,16 @@ function makeSingleton(): {
 
   return {
     store,
-    attach(adapter, startDisabled) {
+    attach(adapter, startDisabled, ingestionPolicy = "legacy", initialRecords = []) {
       forwardUnsubscribe();
-      active = createAssetStore(adapter, startDisabled);
+      active = createAssetStore(adapter, startDisabled, ingestionPolicy, initialRecords);
       forwardUnsubscribe = active.subscribe((event) => {
         for (const listener of forwardedListeners) listener(event);
       });
+      // A project switch can reuse every logical name with different bytes.
+      // Treat rebinding exactly like a whole-library replacement so preview,
+      // compiler, and PDF caches invalidate before they read the new adapter.
+      for (const listener of forwardedListeners) listener({ type: "replaceAll" });
     },
   };
 }
@@ -697,6 +1139,31 @@ export function initAssetStore(): void {
     !hasIdb,
   );
   if (hasIdb) void assetStore.refresh();
+}
+
+export interface ProjectAssetBinding {
+  projectId: string;
+  /** Already staged and verified records used to seed the synchronous cache. */
+  records: readonly StoredAsset[];
+  adapterFactory?: ProjectAssetAdapterFactory;
+  startDisabled?: boolean;
+}
+
+/**
+ * Explicit synchronous project switch seam for the future bootstrap. Merely
+ * importing/discovering this module never calls it. The factory captures the
+ * immutable ID once; the verified records make the first bound snapshot
+ * coherent without an asynchronous refresh frame.
+ */
+export function bindAssetStoreToProject({
+  projectId,
+  records,
+  adapterFactory = createProjectScopedIndexedDbAssetAdapter,
+  startDisabled = false,
+}: ProjectAssetBinding): void {
+  assertAssetProjectId(projectId);
+  initialized = true;
+  singleton.attach(adapterFactory(projectId), startDisabled, "prospective", records);
 }
 
 /** Test seam: rewind the singleton to its pre-init state (module-scoped state

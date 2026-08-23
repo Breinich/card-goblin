@@ -69,18 +69,20 @@ policy — one origin, your real deployed domain:
 ```json
 [
   {
-    "AllowedOrigins": ["https://your-deployed-domain.example"],
+    "AllowedOrigins": ["https://www.cardgoblin.com"],
     "AllowedMethods": ["GET", "PUT"],
-    "AllowedHeaders": ["content-type"],
+    "AllowedHeaders": ["content-type", "if-none-match"],
     "ExposeHeaders": ["etag"],
     "MaxAgeSeconds": 3600
   }
 ]
 ```
 
-Replace `https://your-deployed-domain.example` with your real deployed origin (the
-same value you'd set `NEXT_PUBLIC_SITE_URL` to, per `src/lib/site.ts`). Two things
-worth being precise about:
+For Card Goblin production, keep the canonical `https://www.cardgoblin.com` origin
+shown above. `next.config.ts` permanently redirects the apex `cardgoblin.com` host
+to that canonical origin. For another deployment, replace it with that deployment's
+real browser origin (the same value you'd set `NEXT_PUBLIC_SITE_URL` to, per
+`src/lib/site.ts`). Two things worth being precise about:
 
 - **No `DELETE`.** Deleting an asset goes through this app's OWN route
   (`DELETE /api/cloud/assets/[name]`), which calls R2 server-to-server with the API
@@ -92,11 +94,13 @@ worth being precise about:
   production bucket policy needs; leave it out if you always test against a
   separate bucket (or the in-memory fake this project's own tests use).
 
-`content-type` is the only header the browser needs to send: uploads are
-query-string-signed (no `Authorization` header crosses the wire, and `Content-Length`
-is signed too — see r2.ts's `presignPut` — so an upload of more or fewer bytes than
-was authorized fails outright rather than silently landing), and downloads are plain
-`GET`s.
+Uploads are query-string-signed, so no `Authorization` header crosses the wire.
+The browser does send `Content-Type`, and immutable named-project uploads also send
+the signed `If-None-Match: *` precondition that prevents a race or retry from
+overwriting an existing object. Both therefore need to be accepted by the bucket's
+CORS preflight. `Content-Length` is signed too (see r2.ts's `presignPut`), but Fetch
+sets that forbidden request header itself; application JavaScript cannot set it, so
+it does not belong in `AllowedHeaders`. Downloads are plain `GET`s.
 
 ## Generate `SESSION_SECRET`
 

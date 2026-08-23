@@ -51,7 +51,7 @@ export default function SiteHeader({
             href="/editor"
             className="rounded-lg bg-teal-500 px-3 py-1.5 font-semibold text-gray-900 hover:bg-teal-400"
           >
-            Try the Editor
+            Open Editor
           </Link>
         </nav>
       </div>

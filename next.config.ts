@@ -35,6 +35,16 @@ import type { NextConfig } from "next";
  * is tracked as follow-up work; this keeps deploys under the limit meanwhile.
  */
 const nextConfig: NextConfig = {
+  async redirects() {
+    return [
+      {
+        source: "/:path*",
+        has: [{ type: "host", value: "cardgoblin.com" }],
+        destination: "https://www.cardgoblin.com/:path*",
+        permanent: true,
+      },
+    ];
+  },
   outputFileTracingExcludes: {
     "**/*": [
       // The build's own output and history — these dominate the bundle. The

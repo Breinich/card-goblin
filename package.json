@@ -3,11 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "predev": "npm run generate:starter-projects",
     "dev": "next dev",
+    "prebuild": "npm run generate:starter-projects && npm run validate:starter-projects",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
     "test": "vitest run",
+    "generate:starter-projects": "node scripts/generate-starter-projects.mjs",
+    "validate:starter-projects": "vitest run src/app/editor/_lib/__tests__/starterProjectSources.test.ts",
+    "verify:starter-projects": "node scripts/generate-starter-projects.mjs --check --strict && npm run validate:starter-projects",
     "generate:dicier": "node scripts/generate-dicier-codes.mjs",
     "generate:font-metrics": "node scripts/generate-font-metrics.mjs",
     "hash-password": "node scripts/hash-password.mjs"

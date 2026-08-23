@@ -1,15 +1,16 @@
 ---
 title: Quickstart
 status: stable
-summary: The five-minute tour — the demo project, block by block.
+summary: The five-minute tour — a sample project, block by block.
 ---
 
 # Quickstart
 
-The editor opens with a demo project already loaded, so there's nothing to set up.
-This page walks through it block by block. Open [the editor](/editor) alongside and
-edit as you read — everything recompiles about a third of a second after you stop
-typing.
+Opening the editor first asks you to choose or import a project. This page uses the
+original Monster sample as a compact tour of the Goblin language; it is documentation,
+not an automatically loaded starter. Open [the editor](/editor) alongside, choose a
+project, and adapt the examples as you read — everything recompiles about a third of
+a second after you stop typing.
 
 ## 1. An Enum — a fixed set of options
 

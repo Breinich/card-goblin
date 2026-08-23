@@ -6,7 +6,7 @@
  * rename (identifier-validated, inline error) and delete (two-step confirm),
  * and copy-reference (`asset:<name>`, ready to paste into `src:`). Dialog
  * chrome mirrors pdfExportModal's a11y (role="dialog", Escape/backdrop/focus
- * trap); the destructive confirm mirrors ResetToDemoButton/ProjectFileButtons
+ * trap); the destructive confirm mirrors ProjectFileButtons
  * (the second, differently colored click is always the destructive one).
  *
  * Split like the other windows: `AssetsDrawer` (default-adjacent, store-
@@ -14,8 +14,8 @@
  * `useSyncExternalStore` and injects its real actions; `AssetsDrawerContent`
  * takes the store surface as props + injected actions, so it renders
  * statically for tests (no interaction driver in this project — `initial*`
- * props show each state, the same pattern as ResetToDemoButton's
- * `initialConfirming` / ProjectFileButtons' `initialPending`).
+ * props show each state, the same static-render pattern as
+ * ProjectFileButtons' `initialPending`).
  *
  * Thumbnails are resolved lazily per asset (`getBytes` → object URL) and
  * revoked both as assets drop out of the list (rename/delete elsewhere) and
@@ -40,6 +40,7 @@ import {
   type AssetMeta,
   type StoredAsset,
 } from "@/app/editor/_store/assetStore";
+import { projectLifecycle } from "@/app/editor/_store/projectLifecycle";
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for tests)
@@ -181,6 +182,7 @@ export interface AssetsDrawerContentProps extends AssetsDrawerActions {
   /** Sorted by name (assetStore's contract). */
   assets: AssetMeta[];
   disabled: boolean;
+  cloudBacked?: boolean;
   onClose(): void;
   /** Test seams (no interaction driver in this project) — render each state
    * statically instead of simulating the click that reaches it. */
@@ -198,6 +200,7 @@ const FIELD_CLASS =
 export function AssetsDrawerContent({
   assets,
   disabled,
+  cloudBacked = false,
   onClose,
   upload,
   rename,
@@ -532,21 +535,22 @@ export function AssetsDrawerContent({
           </ul>
         )}
 
-        {/* Storage-reality banner, last in the dialog: the actions above are
-            what people came for; this is the caveat they should leave with.
-            Assets live in THIS browser's site storage (IndexedDB) on THIS
-            device — CardGoblin has no backend, so nothing here is a cloud
-            backup, and "Clear cookies and site data" wipes it. The project
-            file is the only durable copy, hence the export nudge. */}
         <p className="mt-4 rounded border border-amber-700/60 bg-amber-950/40 px-3 py-2 text-xs leading-relaxed text-amber-200">
-          <span className="font-semibold">These images stay on this computer.</span>{" "}
-          They&apos;re saved in this browser&apos;s storage for CardGoblin — nothing is
-          uploaded to a server, and there is no cloud copy. Another browser, another
-          device, or a private window won&apos;t see them, and clearing your browsing
-          data (&ldquo;cookies and site data&rdquo;) deletes them.{" "}
+          {cloudBacked ? (
+            <>
+              <span className="font-semibold">These images sync with this cloud project.</span>{" "}
+              This browser also keeps a project-scoped cache for offline recovery. Check the
+              status bar before leaving to confirm the latest changes are saved to cloud.{" "}
+            </>
+          ) : (
+            <>
+              <span className="font-semibold">These images stay on this computer.</span>{" "}
+              They&apos;re saved in this browser&apos;s CardGoblin storage and are not uploaded.
+              Another browser or device won&apos;t see them, and clearing site data deletes them.{" "}
+            </>
+          )}
           <span className="font-semibold">Export a project file before you finish</span>{" "}
-          — it embeds your images, so it&apos;s your backup and the way to move a
-          project between machines.
+          — it embeds your images as a portable backup.
         </p>
       </div>
     </div>
@@ -565,10 +569,16 @@ export function AssetsDrawer({ onClose }: { onClose(): void }): ReactElement {
     () => assetStore.getSnapshot(),
     () => assetStore.getSnapshot(),
   );
+  const lifecycle = useSyncExternalStore(
+    projectLifecycle.subscribe,
+    projectLifecycle.getSnapshot,
+    projectLifecycle.getSnapshot,
+  );
   return (
     <AssetsDrawerContent
       assets={snapshot.assets}
       disabled={snapshot.disabled}
+      cloudBacked={lifecycle.activeProject?.location === "cloud"}
       onClose={onClose}
       upload={(name, mime, bytes) => assetStore.upload(name, mime, bytes)}
       rename={(oldName, newName) => assetStore.rename(oldName, newName)}

@@ -94,6 +94,7 @@ the section that elaborates it:
 | ◆50 | Numeric interpolation padding (§3.5) | Quoted strings accept Number-only `[name:0N]`, where canonical decimal width `N` is 1..64; zero padding is sign-aware and sets a total **minimum** width without rounding or truncation | Fixed-width generated IDs are common enough to justify one small format, while a general formatting language would add grammar and policy far beyond the requirement. Keeping the form inside string interpolation preserves ordinary `[name]` and every non-string expression unchanged |
 | ◆51 | Preview row provenance and print pairing (§4.2, §6.1) | Single-card and grid views share an optional red one-based source-row overlay outside card SVGs; PDF export has an off-by-default native page label where matching fronts/backs share a project-wide logical sheet number | Row provenance makes generated cards traceable without contaminating artwork/export, while paired sheet numbers solve physical front/back sorting in both duplex and separate page orders |
 | ◆52 | Resolved-text aliases (§3.3.2, §7.5) | `{alias:name}` in resolved `Text`/`TextBox` content expands a top-level Text-valued `let name:` **exactly one level**, before existing color/icon/asset markers parse; unknown, non-Text, and non-global targets remain raw with non-fatal D011 | Shared marker-rich fragments need reuse even when the alias marker comes from sheet data. One level avoids a second recursive language, alias cycles, and surprising local-scope capture; raw fallback plus a data-time notice preserves the gentle marker behavior of ◆44/◆47 without hiding a misspelling |
+| ◆53 | Explicit named project lifecycle (§7.8) | The editor starts behind a non-dismissible project chooser; all users can name/create/import/recover a browser project, admins can additionally create/open revisioned project-ID-scoped cloud projects, `/admin` exclusively owns authentication, and project-file v1/v2 portability remains a release-blocking compatibility contract | Multiple cloud projects cannot safely be layered onto the eager demo, one autosave key, global asset library, and fixed `projects/default` target. A bootstrap authority boundary plus immutable storage IDs prevents local recovery loss, cross-project asset leakage, and late writes landing in the wrong project |
 
 ---
 
@@ -1001,7 +1002,7 @@ warning has been enough in practice — §9.)
   the canvas/pdf-lib assembly is a thin injected layer (pdf assembly itself is
   node-testable with stub images).
 
-### 6.2 localStorage autosave — agreed spec (2026-08-08)
+### 6.2 localStorage autosave — agreed spec (2026-08-08; single-slot startup superseded by §7.8)
 
 - **What persists:** `{ version, code, sheets }` — per sheet, `rows` AND
   `editedRows` (the ◆29 flags are project data: dropping them would un-dim
@@ -1089,7 +1090,7 @@ warning has been enough in practice — §9.)
 Projects & persistence (file export/import of `{code, sheets}`, then accounts/backend),
 uploaded assets, sharing, docs site.
 
-### 7.1 Project files — agreed spec (2026-08-10)
+### 7.1 Project files — agreed spec (2026-08-10; import UI/lifecycle superseded by §7.8)
 
 - **Export** downloads the current project as JSON — the same versioned payload
   autosave persists (`serializeProject`: version, code, sheets with rows +
@@ -1104,7 +1105,8 @@ uploaded assets, sharing, docs site.
   save debounce (~1 s after the confirm, no edit needed): unlike reset, the
   import's `replaceProject` is deliberately NOT muted, so the attached autosave
   subscription persists it like any other change.
-- **UI:** Export / Import join the status bar's right-hand group beside Reset.
+- **Historical UI:** Export / Import originally joined the status bar beside
+  Reset. §7.8 keeps Export there and routes Import through New / Open Project.
 - Multi-project management stays file-based in v1 (the autosave slot remains
   singular); accounts/cloud are later M3.
 
@@ -1210,7 +1212,7 @@ to unblock prototyping.
   gains an optional additive `assetNames` set; a LITERAL `asset:` src whose
   name isn't in the library → new **W005 "unknown asset"** warning (never an
   error — the asset may be about to be uploaded).
-- **UI: an Assets drawer off the status bar** (button beside Export/Import;
+- **UI: an Assets drawer off the status bar** (now beside Export and New/Open;
   count badge): upload via picker + drag-drop, thumbnail list, rename (
   identifier-validated), delete (confirm), copy-reference. No fourth panel.
 - **PDF export:** asset images resolve from IDB bytes to data URIs — always
@@ -1583,6 +1585,68 @@ behaves exactly as it does today.
   `cardgoblin-data.csv`. **Export Data** lives in the status bar, is disabled with
   zero last-good instances, flushes pending compilation, and exports the same
   last-good model owned by preview/PDF.
+
+### 7.8 Explicit named project lifecycle — agreed spec (2026-08-22)
+
+**Requirement:** opening `/editor` starts at an explicit, named project choice,
+not at the demo or whichever local/cloud payload happens to initialize first.
+The detailed implementation sequence, migration rules, and acceptance matrix
+are recorded in
+[`editor-project-lifecycle-plan.md`](editor-project-lifecycle-plan.md); this
+section is the normative decision summary for ◆53.
+
+- The first editor render is an empty shell behind a keyboard-trapped,
+  non-dismissible chooser. Persistence, the real asset adapter, and cloud sync
+  attach only after one coherently staged project has been selected, its
+  complete asset set has verified, and one active-project pointer commits.
+- Every user can create a named Blank, Poker Deck, TCG, or Party Game project,
+  import a project file, or **Continue browser project** when a valid legacy or
+  current local save exists. Project names are editable metadata; immutable
+  project IDs, never names, key storage.
+- The owner-authored non-blank starters are ordinary exported project-file v2
+  documents discovered deterministically from the repository's
+  `template_projects/` directory at build time. Blank is the empty seed. The
+  same pure parser validates starter files and user imports; a metadata-only
+  initial registry lazy-loads the selected payload so starter assets do not
+  inflate `/editor`'s initial JavaScript.
+- `/admin` exclusively owns sign-in and sign-out. The editor performs a
+  no-store session check to decide whether admin choices are available but has
+  no credential, sign-in, or sign-out control of its own. Only an authoritative
+  401 selects anonymous mode; an indeterminate check blocks with Retry.
+- An authenticated admin additionally sees the list of cloud projects. Starter
+  creation and file import create a new project ID rather than overwriting an
+  existing project. Initial cloud creation blocks with Retry until the complete
+  project is durable; creation Retry reuses an idempotency token/project ID,
+  and uploaded bytes are fetched and SHA-256 verified before the manifest can
+  become visible. Local-only work requires signing out and reopening the editor
+  anonymously.
+- Cloud manifests and assets are scoped beneath `projects/<projectId>/`, with
+  revision plus strong-ETag conflict protection per project. Asset bytes are
+  immutable at `assets/<sha256>`; logical names live in the manifest, so two
+  devices cannot overwrite each other's bytes before the manifest CAS chooses
+  a winner. The existing name-keyed `projects/default` payload is listed and
+  lazily migrated as a legacy cloud project, never orphaned. Browser content,
+  cloud caches, and IndexedDB assets are likewise project-scoped so switching
+  cannot leak assets or late writes.
+- **Project-file portability is the release blocker.** All current v1 and v2
+  exports import forever, with code, sheet state, orphaned cells, MIME metadata,
+  and asset bytes preserved; an optional project name is preserved when present
+  and supplied in the chooser for older unnamed files. New exports remain v2
+  and may add only an optional display `name`; the pre-◆53 reader already
+  ignores that field, so new files also retain code/sheets/assets when imported
+  by the current app.
+  Cloud identity, revision, and timestamps never enter the portable file.
+- All new asset ingestion uses the cloud-reviewed exact allowlist—PNG, JPEG,
+  GIF, WebP, AVIF, and SVG—plus a nonzero size and the cloud-safe name cap. Old
+  v2 backups containing another formerly accepted `image/*` subtype, a
+  zero-byte asset, or an overlong name remain locally recoverable and
+  byte-preserving, including re-export, but cannot create a cloud project until
+  those assets are replaced or removed. These are compatibility-only
+  exceptions, not new-upload paths.
+- **New / Open Project** replaces **Reset to demo**. Its post-start chooser may
+  be cancelled because an authoritative project is already active; the initial
+  chooser cannot. Switching awaits persistence/sync detachment and guards every
+  async result by the old immutable project ID before binding the next project.
 
 ## 8. Open questions (explicitly deferred, not blocking the slice)
 

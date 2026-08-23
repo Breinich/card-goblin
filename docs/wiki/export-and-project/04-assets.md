@@ -65,9 +65,9 @@ warning — you might be about to upload it.
 Uploads live in this browser's IndexedDB, separately from the code-and-rows
 [autosave](02-autosave.md): they save **the moment you upload them**, not on
 autosave's one-second debounce, and they survive a reload the same way the rest of
-your project does. **Reset to demo** and a project-file **import** both clear your
-uploads together with your code and rows — two separate stores under the hood,
-cleared as one.
+your project does. Opening or importing another project switches its uploads
+together with its code and rows — separate stores under the hood, activated as one
+project.
 
 Uploaded assets always embed in an [exported PDF](01-pdf-export.md) — unlike URL art,
 they never depend on a host allowing cross-origin use, since the file never leaves
@@ -76,9 +76,9 @@ your browser.
 [Exporting a project file](03-project-files.md) bundles your uploads into the file
 itself — the art, not just a reference to it — so handing someone a
 `.cardgoblin.json` hands them the art too. A file exported before uploaded assets
-existed has no art in it, and importing one clears your asset library, since
-there's nothing in the file to replace it with.
+existed has no art in it, so the newly imported project starts with no uploads.
 
-One library per browser profile, alongside the one save slot
-[autosave](02-autosave.md) uses. It does not roam to another browser or device;
-an exported [project file](03-project-files.md) is the supported way to move it.
+Each immutable project ID has its own browser library. Anonymous projects stay
+on this device; an exported [project file](03-project-files.md) is the supported
+way to move one. Signed-in administrator cloud projects upload reviewed formats
+under content-addressed keys and restore them with the project on another device.
