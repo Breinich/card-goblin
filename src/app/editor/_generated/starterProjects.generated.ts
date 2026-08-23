@@ -12,8 +12,18 @@ export const generatedStarterProjects = [
     label: "Poker Deck",
     suggestedName: "Poker Deck",
     sourceFile: "poker-deck.cardgoblin.json",
-    available: false,
-    load: null,
+    available: true,
+    load: async () => {
+      const [projectModule, projectFile] = await Promise.all([
+        import("../../../../template_projects/poker-deck.cardgoblin.json"),
+        import("../_lib/projectFileFormat"),
+      ]);
+      const parsed = projectFile.parseImportedProjectFile(JSON.stringify(projectModule.default));
+      if ("error" in parsed) {
+        throw new Error("Bundled starter 'Poker Deck' is not a readable CardGoblin project file.");
+      }
+      return parsed;
+    },
   },
   {
     id: "tcg",
