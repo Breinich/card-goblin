@@ -40,11 +40,10 @@
  * - Filename: single-deck models download as `<deckname>.pdf` (sanitized),
  *   anything else as `cardgoblin.pdf` (spec).
  * - Dialog a11y, dependency-free: role="dialog" aria-modal, the dialog takes
- *   focus on open, Tab wraps at its ends, and Escape / a backdrop click close
- *   it — except while an export is running (same rule as the Cancel button;
- *   losing a render mid-flight to a stray click helps nobody). Static tests
- *   cover the roles/attributes; the focus/keyboard behavior itself has no
- *   driver here and is on the manual browser checklist.
+ *   focus on open, and Tab wraps at its ends. Escape / a backdrop click return
+ *   from ◆54's chooser subview first, then close from the options view; both
+ *   are blocked while an export is running (same rule as Cancel). Static tests
+ *   cover roles/attributes; focus/keyboard behavior is on the browser checklist.
  */
 
 import {
@@ -86,6 +85,11 @@ import {
   type ResolveImages,
 } from "@/app/editor/_components/pdfRaster";
 import { Pager, clampIndex } from "@/app/editor/_components/pager";
+import { PdfCardSelector } from "@/app/editor/_components/pdfCardSelector";
+import {
+  filterRenderModelBySelection,
+  printableProjectCardIndices,
+} from "@/app/editor/_components/pdfCardSelection";
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for tests)
@@ -195,6 +199,11 @@ export interface PdfExportModalProps {
   initialFailure?: string | null;
   /** Static-render test seam for the in-flight progress UI. */
   initialProgress?: PdfExportProgress | null;
+  /** ◆54 static-render seams. Production opens in All mode with the chooser
+   * closed; selection is deliberately modal-local and resets on every open. */
+  initialSelectionMode?: CardSelectionMode;
+  initialSelectedProjectCardIndices?: readonly number[];
+  initialChoosingCards?: boolean;
 }
 
 export interface PdfExportProgress {
@@ -202,6 +211,8 @@ export interface PdfExportProgress {
   total: number;
   label: string;
 }
+
+export type CardSelectionMode = "all" | "custom";
 
 export function PdfExportModal({
   model,
@@ -212,6 +223,9 @@ export function PdfExportModal({
   initialSpacingText,
   initialFailure = null,
   initialProgress = null,
+  initialSelectionMode = "all",
+  initialSelectedProjectCardIndices,
+  initialChoosingCards = false,
 }: PdfExportModalProps): ReactElement {
   const [options, setOptions] = useState<PdfExportOptions>(() => ({ ...sessionOptions }));
   const [marginText, setMarginText] = useState(
@@ -225,7 +239,24 @@ export function PdfExportModal({
   const [failure, setFailure] = useState<string | null>(initialFailure);
   /** Previewed page. Clamped at render, never in state (module note). */
   const [pageIndex, setPageIndex] = useState(0);
+  const printableCardIndices = useMemo(
+    () => printableProjectCardIndices(model),
+    [model],
+  );
+  const [selectionMode, setSelectionMode] =
+    useState<CardSelectionMode>(initialSelectionMode);
+  const [customSelection, setCustomSelection] = useState<ReadonlySet<number>>(
+    () =>
+      new Set(
+        (initialSelectedProjectCardIndices ?? [...printableCardIndices]).filter((index) =>
+          printableCardIndices.has(index),
+        ),
+      ),
+  );
+  const [choosingCards, setChoosingCards] = useState(initialChoosingCards);
   const dialogRef = useRef<HTMLDivElement>(null);
+  const chooseCardsButtonRef = useRef<HTMLButtonElement>(null);
+  const wasChoosingCardsRef = useRef(initialChoosingCards);
 
   // Focus the dialog on open (tabIndex −1 makes it focusable) so keyboard
   // users land inside it and Escape works immediately. Effects never run in
@@ -240,13 +271,27 @@ export function PdfExportModal({
     return () => opener?.focus();
   }, []);
 
-  /** Escape closes; Tab wraps at the dialog's ends (minimal focus trap over
-   * the modal's own controls — no dependency, no portal). Closing is blocked
-   * while exporting, matching the Cancel button. */
+  // The chooser replaces (rather than expands under) the options view. Its
+  // range field takes focus on entry; when Done restores the options tree,
+  // return focus to the button that opened it instead of leaving focus on a
+  // node that was just unmounted.
+  useEffect(() => {
+    if (wasChoosingCardsRef.current && !choosingCards) {
+      chooseCardsButtonRef.current?.focus();
+    }
+    wasChoosingCardsRef.current = choosingCards;
+  }, [choosingCards]);
+
+  /** Escape returns from the chooser, otherwise closes; Tab wraps at the
+   * dialog's ends (minimal focus trap, no dependency/portal). Both Escape
+   * actions are blocked while exporting, matching the Cancel button. */
   const handleDialogKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
     if (event.key === "Escape") {
       event.stopPropagation();
-      if (!working) onClose();
+      if (!working) {
+        if (choosingCards) setChoosingCards(false);
+        else onClose();
+      }
       return;
     }
     if (event.key !== "Tab" || dialogRef.current === null) return;
@@ -280,9 +325,40 @@ export function PdfExportModal({
   const marginValid = parseNonNegativeMm(marginText) !== null;
   const spacingValid = parseNonNegativeMm(spacingText) !== null;
 
-  const layout = useMemo(() => layoutPdf(model, options), [model, options]);
-  const previewIndex = clampIndex(pageIndex, layout.pages.length);
-  const previewPage = layout.pages[previewIndex];
+  // A pending compile/cloud refresh can replace the model while the modal is
+  // open. Keep the stored Custom choice for a possible same-session return,
+  // but only count/filter indices that are printable in THIS render.
+  const activeCustomSelection = useMemo(
+    () =>
+      new Set(
+        [...customSelection].filter((index) => printableCardIndices.has(index)),
+      ),
+    [customSelection, printableCardIndices],
+  );
+
+  /** ◆54: All is a distinct mode so the opening behavior remains byte-for-
+   * byte compatible, including the existing skipped-error warning. Custom
+   * derives a filtered model without mutating/re-numbering the source. The
+   * unchanged layout engine then compacts within each deck, mirrors the same
+   * selected chunks for backs, and registers only selected faces/images. */
+  const selectedModel = useMemo(
+    () =>
+      selectionMode === "all"
+        ? model
+        : filterRenderModelBySelection(model, activeCustomSelection),
+    [activeCustomSelection, model, selectionMode],
+  );
+  const selectedPrintableCards =
+    selectionMode === "all" ? printableCardIndices.size : activeCustomSelection.size;
+  const totalGeneratedCards = model.decks.reduce(
+    (total, deck) => total + deck.cards.length,
+    0,
+  );
+  const unavailableErrorCards = totalGeneratedCards - printableCardIndices.size;
+  const layout = useMemo(
+    () => layoutPdf(selectedModel, options),
+    [options, selectedModel],
+  );
 
   // PRE-FLIGHT image check (§3.3 M2; §7.1b): the spec's "N images could not
   // be embedded" warning must appear BEFORE export, so the exported faces'
@@ -342,6 +418,7 @@ export function PdfExportModal({
     !spacingValid ||
     !imagesReady ||
     layout.fitErrors.length > 0 ||
+    selectedPrintableCards === 0 ||
     layout.placedCards === 0;
 
   const handleExport = async (): Promise<void> => {
@@ -397,6 +474,9 @@ export function PdfExportModal({
         label: `Rendered ${faceCount} card face${faceCount === 1 ? "" : "s"}.`,
       });
       const bytes = await assemblePdf(layout, images, options, reportAssemblyProgress);
+      // Filename remains a property of the source project, not of a transient
+      // subset (◆54): selecting one deck in a multi-deck project must not
+      // silently change `cardgoblin.pdf` into a deck-specific name.
       downloadPdf(bytes, pdfFileName(model));
       onClose();
     } catch (error) {
@@ -413,10 +493,13 @@ export function PdfExportModal({
       // through the DOM (fixed positioning does not break inheritance).
       className="fixed inset-0 z-50 flex items-center justify-center whitespace-normal bg-black/60 p-4"
       role="presentation"
-      // Backdrop click closes; clicks inside the dialog bubble here with a
-      // different target, so only true backdrop hits pass the guard.
+      // Backdrop click returns from chooser / closes from options. Clicks
+      // inside bubble with a different target, so only true backdrop hits pass.
       onClick={(event) => {
-        if (event.target === event.currentTarget && !working) onClose();
+        if (event.target === event.currentTarget && !working) {
+          if (choosingCards) setChoosingCards(false);
+          else onClose();
+        }
       }}
     >
       <div
@@ -426,17 +509,104 @@ export function PdfExportModal({
         aria-labelledby="pdf-export-title"
         tabIndex={-1}
         onKeyDown={handleDialogKeyDown}
-        className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-y-auto rounded-lg border border-gray-700 bg-gray-800 p-4 text-sm text-gray-200 shadow-xl outline-none"
+        className="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-y-auto rounded-lg border border-gray-700 bg-gray-800 p-4 text-sm text-gray-200 shadow-xl outline-none"
       >
         <h2 id="pdf-export-title" className="mb-3 text-base font-semibold text-white">
-          Export PDF
+          {choosingCards ? "Choose cards to print" : "Export PDF"}
         </h2>
 
-        {/* Options and preview side by side on a wide screen, stacked below
-            it (the preview is the reason this modal is wide). */}
-        <div className="flex flex-col gap-4 md:flex-row md:items-start">
+        {choosingCards ? (
+          <div
+            id="pdf-card-chooser"
+            className="flex min-h-0 flex-1 flex-col gap-4 lg:flex-row"
+          >
+            <div className="min-w-0 flex-1">
+              <PdfCardSelector
+                model={model}
+                selected={selectionMode === "all" ? printableCardIndices : activeCustomSelection}
+                disabled={working}
+                onChange={(next, intent) => {
+                  setCustomSelection(next);
+                  // Set equality is not mode intent: re-checking the final
+                  // custom card and `Select only 1-N` remain Custom. Only the
+                  // explicit Select all action (or All radio) returns to All.
+                  setSelectionMode(intent);
+                }}
+              />
+              <Notices
+                layout={layout}
+                marginValid={marginValid}
+                spacingValid={spacingValid}
+                checkingImages={!imagesReady ? remoteImageCount : 0}
+                failedImages={failedImages}
+                selectionMode={selectionMode}
+                selectedPrintableCards={selectedPrintableCards}
+                totalPrintableCards={printableCardIndices.size}
+              />
+            </div>
+            <div className="min-w-0 lg:w-72 lg:shrink-0">
+              <ExportPagePreview
+                layout={layout}
+                options={options}
+                pageIndex={pageIndex}
+                onPageChange={setPageIndex}
+                heightClass="h-[26rem]"
+              />
+            </div>
+          </div>
+        ) : (
+          <>
+          {/* Options and preview side by side on a wide screen, stacked below
+              it (the preview is the reason this modal is wide). */}
+          <div className="flex flex-col gap-4 md:flex-row md:items-start">
           <div className="md:w-[26rem] md:shrink-0">
             <div className="grid grid-cols-2 gap-3">
+              <fieldset className="col-span-2 rounded border border-gray-700 bg-gray-900 p-2">
+                <legend className="px-1 text-xs text-gray-400">Cards to print</legend>
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                  <label className="flex items-center gap-1.5 text-xs text-gray-300">
+                    <input
+                      type="radio"
+                      name="pdf-card-selection-mode"
+                      value="all"
+                      checked={selectionMode === "all"}
+                      disabled={working}
+                      onChange={() => setSelectionMode("all")}
+                      className="accent-gray-400"
+                    />
+                    All
+                  </label>
+                  <label className="flex items-center gap-1.5 text-xs text-gray-300">
+                    <input
+                      type="radio"
+                      name="pdf-card-selection-mode"
+                      value="custom"
+                      checked={selectionMode === "custom"}
+                      disabled={working}
+                      onChange={() => setSelectionMode("custom")}
+                      className="accent-gray-400"
+                    />
+                    Custom
+                  </label>
+                  <span className="text-xs text-gray-400" aria-live="polite">
+                    {selectedPrintableCards} of {printableCardIndices.size} printable card
+                    {printableCardIndices.size === 1 ? "" : "s"}
+                    {unavailableErrorCards > 0 && (
+                      <> · {unavailableErrorCards} unavailable</>
+                    )}
+                  </span>
+                  <button
+                    ref={chooseCardsButtonRef}
+                    type="button"
+                    disabled={working}
+                    onClick={() => setChoosingCards(true)}
+                    className="ml-auto rounded border border-gray-600 bg-gray-800 px-2 py-1 text-xs text-gray-300 hover:bg-gray-700 disabled:opacity-50"
+                  >
+                    Choose cards…
+                  </button>
+                </div>
+              </fieldset>
+
               <label className={LABEL_CLASS}>
                 Page size
                 <select
@@ -572,6 +742,9 @@ export function PdfExportModal({
               spacingValid={spacingValid}
               checkingImages={!imagesReady ? remoteImageCount : 0}
               failedImages={failedImages}
+              selectionMode={selectionMode}
+              selectedPrintableCards={selectedPrintableCards}
+              totalPrintableCards={printableCardIndices.size}
             />
 
             {failure !== null && (
@@ -588,55 +761,17 @@ export function PdfExportModal({
             )}
           </div>
 
-          {/* Live page preview: the same layout result the export consumes, so
-              every option above is visible here before anyone spends a render
-              on a PDF (§6.1 †). */}
-          <div className="flex min-w-0 flex-1 flex-col gap-2">
-            <div className="flex items-center justify-between gap-2">
-              <span className="truncate text-xs text-gray-400">
-                {previewPage === undefined ? (
-                  "Nothing to preview"
-                ) : (
-                  <>
-                    <span className="font-semibold text-gray-200">
-                      {previewPage.deckName}
-                    </span>
-                    {" · "}
-                    {previewPage.side === "front" ? "Front" : "Back"}
-                    {" · "}
-                    {previewPage.cards.length} card
-                    {previewPage.cards.length === 1 ? "" : "s"}
-                  </>
-                )}
-              </span>
-              {layout.pages.length > 0 && (
-                <Pager
-                  index={previewIndex}
-                  count={layout.pages.length}
-                  onChange={setPageIndex}
-                  previousLabel="Previous page"
-                  nextLabel="Next page"
-                />
-              )}
-            </div>
-            <div className="flex h-96 items-center justify-center rounded border border-gray-700 bg-gray-900 p-3">
-              {previewPage === undefined ? (
-                <p className="text-xs text-gray-500">
-                  No pages to lay out — see the messages on the left.
-                </p>
-              ) : (
-                <PdfPagePreview
-                  page={previewPage}
-                  faceSpecs={layout.faceSpecs}
-                  cutLines={options.cutLines}
-                  crossMarks={options.crossMarks}
-                  pageNumbers={options.pageNumbers}
-                  sheetCount={layout.sheetCount}
-                />
-              )}
-            </div>
+          {/* Same component appears beside the chooser, so repacking and
+              page-count changes stay visible while selections are made. */}
+          <ExportPagePreview
+            layout={layout}
+            options={options}
+            pageIndex={pageIndex}
+            onPageChange={setPageIndex}
+          />
           </div>
-        </div>
+          </>
+        )}
 
         <div className="mt-4 flex items-center justify-end gap-2">
           {working && progress !== null && (
@@ -664,17 +799,95 @@ export function PdfExportModal({
             onClick={onClose}
             className="rounded border border-gray-600 bg-gray-800 px-3 py-1 text-gray-300 hover:bg-gray-700 disabled:opacity-50"
           >
-            Cancel
+            {choosingCards ? "Cancel export" : "Cancel"}
           </button>
-          <button
-            type="button"
-            disabled={exportBlocked}
-            onClick={() => void handleExport()}
-            className="rounded border border-gray-500 bg-gray-600 px-3 py-1 font-semibold text-white hover:bg-gray-500 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {working ? "Exporting…" : "Export"}
-          </button>
+          {choosingCards ? (
+            <button
+              type="button"
+              disabled={working}
+              onClick={() => setChoosingCards(false)}
+              className="rounded border border-gray-500 bg-gray-600 px-3 py-1 font-semibold text-white hover:bg-gray-500 disabled:opacity-50"
+            >
+              Done
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled={exportBlocked}
+              onClick={() => void handleExport()}
+              className="rounded border border-gray-500 bg-gray-600 px-3 py-1 font-semibold text-white hover:bg-gray-500 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {working ? "Exporting…" : "Export"}
+            </button>
+          )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+/** Live page preview shared by the options and ◆54 chooser views. It consumes
+ * the exact layout used for export, and clamps its remembered page whenever a
+ * selection or option change shrinks the run. */
+function ExportPagePreview({
+  layout,
+  options,
+  pageIndex,
+  onPageChange,
+  heightClass = "h-96",
+}: {
+  layout: ReturnType<typeof layoutPdf>;
+  options: PdfExportOptions;
+  pageIndex: number;
+  onPageChange(index: number): void;
+  heightClass?: string;
+}): ReactElement {
+  const previewIndex = clampIndex(pageIndex, layout.pages.length);
+  const previewPage = layout.pages[previewIndex];
+  return (
+    <div className="flex min-w-0 flex-1 flex-col gap-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="truncate text-xs text-gray-400">
+          {previewPage === undefined ? (
+            "Nothing to preview"
+          ) : (
+            <>
+              <span className="font-semibold text-gray-200">{previewPage.deckName}</span>
+              {" · "}
+              {previewPage.side === "front" ? "Front" : "Back"}
+              {" · "}
+              {previewPage.cards.length} card
+              {previewPage.cards.length === 1 ? "" : "s"}
+            </>
+          )}
+        </span>
+        {layout.pages.length > 0 && (
+          <Pager
+            index={previewIndex}
+            count={layout.pages.length}
+            onChange={onPageChange}
+            previousLabel="Previous page"
+            nextLabel="Next page"
+          />
+        )}
+      </div>
+      <div
+        className={`flex ${heightClass} items-center justify-center rounded border border-gray-700 bg-gray-900 p-3`}
+      >
+        {previewPage === undefined ? (
+          <p className="text-xs text-gray-500">
+            No pages to lay out — see the messages on the left.
+          </p>
+        ) : (
+          <PdfPagePreview
+            page={previewPage}
+            faceSpecs={layout.faceSpecs}
+            cutLines={options.cutLines}
+            crossMarks={options.crossMarks}
+            pageNumbers={options.pageNumbers}
+            sheetCount={layout.sheetCount}
+          />
+        )}
       </div>
     </div>
   );
@@ -689,6 +902,9 @@ function Notices({
   spacingValid,
   checkingImages,
   failedImages,
+  selectionMode,
+  selectedPrintableCards,
+  totalPrintableCards,
 }: {
   layout: ReturnType<typeof layoutPdf>;
   marginValid: boolean;
@@ -699,6 +915,9 @@ function Notices({
    * pre-flight (remoteImageUrlsUsed), not asset resolution. */
   checkingImages: number;
   failedImages: number;
+  selectionMode: CardSelectionMode;
+  selectedPrintableCards: number;
+  totalPrintableCards: number;
 }): ReactElement | null {
   const notes: ReactNode[] = [];
 
@@ -760,7 +979,11 @@ function Notices({
         key="empty"
         className="rounded border border-red-900 bg-red-950 px-2 py-1 text-xs text-red-300"
       >
-        Nothing to export — every card is an error placeholder.
+        {totalPrintableCards === 0
+          ? "Nothing to export — every card is an error placeholder."
+          : selectionMode === "custom" && selectedPrintableCards === 0
+            ? "Nothing to export — select at least one printable card."
+            : "Nothing to export — no printable cards remain."}
       </p>,
     );
   }
@@ -786,7 +1009,10 @@ export function ExportPdfButtonContent({
   lastGood,
   rasterize,
 }: ExportPdfButtonContentProps): ReactElement {
-  const [open, setOpen] = useState(false);
+  // Freeze the exact last-good model when the modal opens. A delayed compile
+  // or cloud refresh must not retarget transient project-card ordinals while
+  // a print run is being selected.
+  const [exportModel, setExportModel] = useState<RenderModel | null>(null);
   const totalCards =
     lastGood?.model.decks.reduce((n, deck) => n + deck.cards.length, 0) ?? 0;
   const disabled = lastGood === null || totalCards === 0;
@@ -795,16 +1021,18 @@ export function ExportPdfButtonContent({
       <button
         type="button"
         disabled={disabled}
-        onClick={() => setOpen(true)}
+        onClick={() => {
+          if (lastGood !== null) setExportModel(lastGood.model);
+        }}
         title={disabled ? "Nothing to export yet" : "Export the deck as a print PDF"}
         className="rounded border border-gray-600 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
       >
         Export PDF
       </button>
-      {open && lastGood !== null && (
+      {exportModel !== null && (
         <PdfExportModal
-          model={lastGood.model}
-          onClose={() => setOpen(false)}
+          model={exportModel}
+          onClose={() => setExportModel(null)}
           {...(rasterize ? { rasterize } : {})}
         />
       )}

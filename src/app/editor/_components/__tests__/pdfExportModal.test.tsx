@@ -101,6 +101,90 @@ describe("PdfExportModal — page preview", () => {
   });
 });
 
+describe("PdfExportModal — selective cards (◆54)", () => {
+  beforeEach(resetSessionPdfOptions);
+
+  it("opens in All mode with a generated-instance summary and accessible chooser", () => {
+    const markup = render(demoModel());
+    expect(markup).toContain("Cards to print");
+    expect(markup).toContain('name="pdf-card-selection-mode"');
+    expect(markup).toMatch(/<input[^>]*checked=""[^>]*value="all"/);
+    expect(markup).toContain("9 of 9 printable cards");
+    expect(markup).toContain("Choose cards…");
+    // This opens a replacement subview, not an in-place disclosure; no stale
+    // aria-controls/expanded relationship points at an unmounted panel.
+    expect(markup).not.toContain('aria-controls="pdf-card-chooser"');
+    expect(markup).not.toContain('aria-expanded="false"');
+  });
+
+  it("a seeded Custom subset drives the same compacted page preview", () => {
+    const markup = renderToStaticMarkup(
+      <PdfExportModal
+        model={demoModel()}
+        onClose={() => {}}
+        initialSelectionMode="custom"
+        initialSelectedProjectCardIndices={[0, 6, 8]}
+      />,
+    );
+    expect(markup).toMatch(/<input[^>]*checked=""[^>]*value="custom"/);
+    expect(markup).toContain("3 of 9 printable cards");
+    // Three sparse source instances compact onto one front and one back.
+    expect(markup).toContain("1 / 2");
+    expect(markup).toContain('aria-label="Page preview: Monster, front, 3 cards"');
+  });
+
+  it("an empty Custom selection blocks export with selection-specific copy", () => {
+    const markup = renderToStaticMarkup(
+      <PdfExportModal
+        model={demoModel()}
+        onClose={() => {}}
+        initialSelectionMode="custom"
+        initialSelectedProjectCardIndices={[]}
+      />,
+    );
+    expect(markup).toContain("0 of 9 printable cards");
+    expect(markup).toContain("Nothing to export — select at least one printable card.");
+    const exportButton = /<button[^>]*>Export<\/button>/.exec(markup)?.[0];
+    expect(exportButton).toContain('disabled=""');
+  });
+
+  it("the chooser exposes range actions, native checkboxes, provenance, and unavailable errors", () => {
+    const markup = renderToStaticMarkup(
+      <PdfExportModal
+        model={demoModel("first")}
+        onClose={() => {}}
+        initialChoosingCards
+      />,
+    );
+    expect(markup).toContain("Choose cards to print");
+    expect(markup).toContain('id="pdf-card-chooser"');
+    expect(markup).toContain("Card numbers");
+    expect(markup).toContain('placeholder="1-6, 16, 18"');
+    expect(markup).toContain("Select only");
+    expect(markup).toContain("Deselect");
+    expect(markup).toContain("sheet row 1");
+    expect(markup).toContain("unavailable because it has errors");
+    expect(markup).toContain('type="checkbox"');
+    expect(markup).toContain('disabled=""');
+    expect(markup).toContain(">Done<");
+    expect(markup).not.toContain(">Export<");
+  });
+
+  it("keeps empty-selection notices visible beside the chooser preview", () => {
+    const markup = renderToStaticMarkup(
+      <PdfExportModal
+        model={demoModel()}
+        onClose={() => {}}
+        initialChoosingCards
+        initialSelectionMode="custom"
+        initialSelectedProjectCardIndices={[]}
+      />,
+    );
+    expect(markup).toContain("Nothing to export — select at least one printable card.");
+    expect(markup).toContain("No pages to lay out");
+  });
+});
+
 /** A one-card model whose face draws an Image (§3.3 M2) — the pre-flight case. */
 function imageModel(): RenderModel {
   const result = compileProject(

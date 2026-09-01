@@ -11,6 +11,34 @@ your code is mid-break the export uses the same last-good render you're looking 
 
 The button is disabled until there's at least one card to print.
 
+## Choosing which cards to print
+
+Every time you open **Export PDF**, **Cards to print** starts on **All**. Switch to
+**Custom** or choose **Choose cards…** when you only need part of a large project.
+This is a print-run choice only: it does not change your Goblin code, spreadsheet
+rows, `count:`, saved project, or cloud copy.
+
+The chooser shows card thumbnails grouped by `Card:` block. Use the Front/Back
+toggle to identify either face, click individual checkboxes, or use **Select all**
+and **Clear**. Cards with data errors stay visible at their original number but are
+unavailable because they have no printable face.
+
+For a quick known selection, type project-wide card numbers such as
+`1-6, 16, 18`. Commas and ascending inclusive ranges are accepted; spaces and
+duplicate numbers are harmless. **Select only** replaces the current selection and
+**Deselect** removes those numbers. A malformed, backwards, or out-of-range entry
+shows an error and changes nothing.
+
+These are generated-card numbers, not spreadsheet row numbers. Loops and `count:`
+can turn one row into several independently selectable cards. The numbers match the
+editor's project-wide card order and the `@project_card` column in
+[Export Data](08-data-export.md). They never change when earlier cards are omitted.
+
+Selected cards keep their original order and pack together normally within their
+own deck; they do not leave blank holes. Decks still never share a page. The live
+page preview, matching backs, image checks, and export progress all update to the
+selected print run. Closing and reopening the export modal resets the choice to All.
+
 ## The preview
 
 Next to the options is a picture of the actual page. It redraws as you change
@@ -73,8 +101,9 @@ the export — reduce the margin or spacing, or choose a larger page.
   embedding, page construction, and final PDF saving. Large decks can still take a
   while, but the current stage and percentage remain visible.
 - **Error placeholder cards are skipped.** If any exist, the modal warns you how many
-  before you export. If *every* card is a placeholder there's nothing to print and
-  export is blocked.
+  before you export. They appear disabled in the card chooser. If *every* card is a
+  placeholder—or a Custom selection contains no printable cards—there's nothing to
+  print and export is blocked.
 - **Images are checked before you export.** When the deck uses
   [`Image`](../goblin-script/05-images.md) shapes, the modal probes their URLs as it opens.
   Embedding an image into the PDF needs the host's permission (the file is fetched

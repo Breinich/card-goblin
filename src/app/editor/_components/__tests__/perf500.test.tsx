@@ -16,6 +16,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { compileProject } from "@/lib/lang";
 import { DEMO_PROJECT_SOURCE } from "@/lib/lang/demoProject";
 import { PreviewContent } from "@/app/editor/_components/windowPreview";
+import { PdfCardSelector } from "@/app/editor/_components/pdfCardSelector";
+import { printableProjectCardIndices } from "@/app/editor/_components/pdfCardSelection";
 
 /** 168 distinct edited rows × 3 suits = 504 cards, every combination with
  * its own health (1–9 hearts) and cost so faces stay DISTINCT — copies of
@@ -68,6 +70,33 @@ describe("500-card scale (§5 acceptance)", () => {
     expect(markup).toContain("504 cards");
 
     // The §5 budget, CI-generous.
+    expect(elapsedMs).toBeLessThan(2000);
+  });
+
+  it("keeps the ◆54 print chooser windowed at 504 cards", () => {
+    const result = compileProject(
+      DEMO_PROJECT_SOURCE,
+      { Monsters: ROWS },
+      { Monsters: ROWS.map(() => true) },
+    );
+    expect(result.diagnostics).toEqual([]);
+
+    const startedAt = performance.now();
+    const markup = renderToStaticMarkup(
+      <PdfCardSelector
+        model={result.model}
+        selected={printableProjectCardIndices(result.model)}
+        onChange={() => {}}
+      />,
+    );
+    const elapsedMs = performance.now() - startedAt;
+
+    // One native checkbox per mounted thumbnail. The selector's finite SSR
+    // viewport must mount a useful band, never the entire 504-card deck.
+    const checkboxCount = (markup.match(/type="checkbox"/g) ?? []).length;
+    expect(checkboxCount).toBeGreaterThan(0);
+    expect(checkboxCount).toBeLessThan(100);
+    expect(markup).toContain("504 of 504 printable cards selected");
     expect(elapsedMs).toBeLessThan(2000);
   });
 });

@@ -95,6 +95,7 @@ the section that elaborates it:
 | ◆51 | Preview row provenance and print pairing (§4.2, §6.1) | Single-card and grid views share an optional red one-based source-row overlay outside card SVGs; PDF export has an off-by-default native page label where matching fronts/backs share a project-wide logical sheet number | Row provenance makes generated cards traceable without contaminating artwork/export, while paired sheet numbers solve physical front/back sorting in both duplex and separate page orders |
 | ◆52 | Resolved-text aliases (§3.3.2, §7.5) | `{alias:name}` in resolved `Text`/`TextBox` content expands a top-level Text-valued `let name:` **exactly one level**, before existing color/icon/asset markers parse; unknown, non-Text, and non-global targets remain raw with non-fatal D011 | Shared marker-rich fragments need reuse even when the alias marker comes from sheet data. One level avoids a second recursive language, alias cycles, and surprising local-scope capture; raw fallback plus a data-time notice preserves the gentle marker behavior of ◆44/◆47 without hiding a misspelling |
 | ◆53 | Explicit named project lifecycle (§7.8) | The editor starts behind a non-dismissible project chooser; all users can name/create/import/recover a browser project, admins can additionally create/open revisioned project-ID-scoped cloud projects, `/admin` exclusively owns authentication, and project-file v1/v2 portability remains a release-blocking compatibility contract | Multiple cloud projects cannot safely be layered onto the eager demo, one autosave key, global asset library, and fixed `projects/default` target. A bootstrap authority boundary plus immutable storage IDs prevents local recovery loss, cross-project asset leakage, and late writes landing in the wrong project |
+| ◆54 | Selective PDF export (§6.1) | PDF export opens on **All** but can switch to a transient **Custom** set of generated instances, chosen from a virtualized thumbnail grid or project-card number ranges; selection filters the immutable model before the existing layout runs | Large projects need small print runs without editing sheet rows or generation counts. Generated-instance identity handles loops/copies correctly, while reusing the layout keeps compacting, duplex pairing, preview, image pre-flight, and progress consistent by construction |
 
 ---
 
@@ -962,6 +963,31 @@ warning has been enough in practice — §9.)
   (210×297 mm); outer margin mm (**10**); card spacing mm (**0**); cut lines
   **dotted**/off/red/bold; cross marks **off**/dotted/red/bold; backs
   **duplex**/none/separate; print page numbers off by default.
+- **Cards to print (◆54):** every modal open starts in **All** mode. **Custom**
+  mode chooses exact generated instances (row × loop cases × `count:` copy),
+  never source rows or content hashes. The one-based number shown is
+  `meta.projectCardIndex + 1`, the same project-wide identity as the preview's
+  flat pager and CSV `@project_card`; deselection never renumbers card artwork
+  or metadata. **Choose cards…** opens a front/back thumbnail grid grouped by
+  `Card:` deck, with native checkboxes, Select all, Clear, and a range field.
+  The grid is row-windowed at large project sizes. The range grammar is
+  comma-separated positive numbers and ascending inclusive ranges (for example
+  `1-6, 16, 18`); whitespace is ignored, duplicates collapse, and any malformed,
+  descending, or out-of-range item rejects the whole action. **Select only**
+  replaces the custom set; **Deselect** subtracts from the current set.
+- **Selection lifecycle and layout (◆54):** card selection is modal-local — it
+  never enters session print options, the editor store, autosave, cloud payloads,
+  or project files, and closing/reopening resets to All. Switching temporarily
+  between All and Custom within one modal preserves the Custom set. Custom
+  selection derives a new filtered `RenderModel` without mutating the source,
+  preserving original deck/card order and instance metadata. Empty decks are
+  omitted; remaining cards compact row-major *within* each deck (decks still
+  never share pages). The same filtered result drives fit errors, page preview,
+  front/back pairing, face/image pre-flight, progress, and PDF assembly. An empty
+  Custom set blocks export with a selection-specific message. Error placeholders
+  keep their original numbers in the picker but are disabled/unavailable. The
+  filename remains a property of the original project: selecting one deck from a
+  multi-deck project still downloads `cardgoblin.pdf`.
 - **Optional print pairing label (◆51):** a native PDF page label reads
   `k/N front` or `k/N back`. `N` counts logical front sheets across the project,
   and a matching front/back pair shares `k` even when Separate mode reorders all

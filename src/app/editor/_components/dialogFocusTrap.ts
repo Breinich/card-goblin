@@ -27,7 +27,7 @@
  * can land on. Matching this alone is not sufficient (see module note
  * above, and `isFocusTrapCandidate`, which every caller must also apply). */
 export const FOCUSABLE_SELECTOR =
-  'button, input, select, textarea, a[href], [tabindex]:not([tabindex="-1"])';
+  'button, input, select, textarea, summary, a[href], [tabindex]:not([tabindex="-1"])';
 
 /**
  * True when an element `FOCUSABLE_SELECTOR` matched is ACTUALLY reachable by

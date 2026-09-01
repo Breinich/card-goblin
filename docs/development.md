@@ -50,8 +50,9 @@ src/app/editor/
                          cardSvg, deckSection, previewSingle, previewVirtual),
                          bespoke grid
                          (windowSpreadsheet, gridModel), statusBar, panelLayout,
-                         PDF export (pdfExportModal, pdfLayout, pdfPagePreview,
-                         pdfRaster, pdfAssemble), project file export/import
+                         PDF export (pdfExportModal, pdfCardSelector,
+                         pdfCardSelection, pdfLayout, pdfPagePreview, pdfRaster,
+                         pdfAssemble), project file export/import
                          (projectFile), the Assets drawer (assetsDrawer, §7.4),
                          the cloud sync status control + sign-in dialog
                          (cloudSyncControl, §7.6), shared prev/next control (pager)
@@ -184,6 +185,11 @@ subsystem:
     change (raise the margin → fewer cards per page; cut lines off → lines
     vanish), and paging to 2 shows the duplex back with mirrored columns. Set the
     margin to 100 → fit error, "No pages to lay out", Export disabled.
+16. **Selective export** — reopen Export PDF and confirm Cards to print resets to
+    All. Choose cards, switch Front/Back, uncheck thumbnails, and use
+    `1-6, 16, 18` with Select only/Deselect. Confirm the summary and page preview
+    update, remaining cards compact without blank slots, Clear blocks Export,
+    invalid ranges change nothing, and Done returns focus to Choose cards.
 
 Headless browser screenshot (no driver installed; one-shot only):
 

@@ -41,6 +41,9 @@ describe("FOCUSABLE_SELECTOR", () => {
     expect(FOCUSABLE_SELECTOR).toContain("input");
     expect(FOCUSABLE_SELECTOR).toContain("select");
     expect(FOCUSABLE_SELECTOR).toContain("textarea");
+    // ◆54's unavailable-card disclosure uses native details/summary; summary
+    // participates in the real tab order and must be one of the trap ends.
+    expect(FOCUSABLE_SELECTOR).toContain("summary");
     // tabindex="-1" is explicitly excluded — it's in the DOM but
     // intentionally out of the tab order (e.g. the dialog's own root).
     expect(FOCUSABLE_SELECTOR).toContain(':not([tabindex="-1"])');
