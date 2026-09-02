@@ -71,6 +71,8 @@ One tab per `Sheet:` you declare in code. The **columns come from your code**; t
 **rows are yours to fill**.
 
 - Enum-typed columns become dropdowns.
+- `Set<Enum>` and `List<Enum>` columns become chip editors; Lists also expose
+  left/right controls because their order and duplicates are meaningful.
 - A cell whose value doesn't fit its column flags **red**.
 - A brand-new, never-edited empty row renders **dimmed** and is excluded from the deck
   until you type into it — so adding a row doesn't spray errors before you can fill it

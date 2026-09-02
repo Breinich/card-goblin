@@ -72,9 +72,9 @@ A single Card block generates at most **2,000 physical cards**. A typo'd count o
 `999999` triggers D007 and truncates that Card block with a note in the status bar
 instead of freezing the editor.
 
-Separately, each card instance has a budget of **500 Repeat expansions per card**.
-Every iteration of every `Repeat` counts, including the outer and inner iterations
-of nested repeats. Crossing that budget is D004: the affected card becomes an error
+Separately, each card instance has a shared budget of **500 `Repeat`/`ForEach`
+iterations per card**. Every iteration of either node counts, including outer and
+inner iterations of mixed nested loops. Crossing that budget is D004: the affected card becomes an error
 placeholder rather than keeping a partially truncated face. Other cards continue to
 generate normally.
 

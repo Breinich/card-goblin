@@ -76,14 +76,16 @@ export interface SheetState {
 
 export type SheetsState = Record<string, SheetState>;
 
-/** A column's type in a schema snapshot. `Enum` carries its cases so the grid
- * can build dropdowns (task 6) without touching the AST. `Unknown` column
- * types cannot reach a snapshot: an unresolved type is E002 → not a good
- * compile (extractSchema degrades that impossible case to Text). */
+/** An enum-backed schema type carries its cases so the grid can build a
+ * dropdown or collection chip editor without touching the AST. `Unknown`
+ * cannot reach a snapshot: an unresolved type is E002 → not a good compile
+ * (extractSchema defensively degrades that impossible case to Text). */
 export type SchemaColumnType =
   | { kind: "Text" }
   | { kind: "Number" }
-  | { kind: "Enum"; enumName: string; cases: string[] };
+  | { kind: "Enum"; enumName: string; cases: string[] }
+  | { kind: "Set"; enumName: string; cases: string[] }
+  | { kind: "List"; enumName: string; cases: string[] };
 
 export interface SchemaColumn {
   name: string;
@@ -198,12 +200,14 @@ function toSchemaType(type: ValueType, bindings: Bindings): SchemaColumnType {
   switch (type.kind) {
     case "Number":
       return { kind: "Number" };
-    case "Enum": {
+    case "Enum":
+    case "Set":
+    case "List": {
       // The enum resolved (else the column type would be Unknown → E002, not
       // a good compile); the fallback only guards the type system.
       const decl = bindings.enums.get(type.enumName);
       return {
-        kind: "Enum",
+        kind: type.kind,
         enumName: type.enumName,
         cases: decl ? decl.cases.map((c) => c.name.name) : [],
       };
@@ -216,14 +220,18 @@ function toSchemaType(type: ValueType, bindings: Bindings): SchemaColumnType {
 }
 
 /** Type identity for the ◆26† rename heuristic: kind, plus the enum NAME for
- * enum columns (case-list edits don't change a column's type). */
+ * Enum/Set/List columns (case-list edits don't change a column's type). */
 function columnTypeMatches(a: SchemaColumnType, b: SchemaColumnType): boolean {
   if (a.kind !== b.kind) return false;
-  return a.kind !== "Enum" || b.kind !== "Enum" || a.enumName === b.enumName;
+  return (
+    (a.kind !== "Enum" && a.kind !== "Set" && a.kind !== "List") ||
+    (b.kind !== "Enum" && b.kind !== "Set" && b.kind !== "List") ||
+    a.enumName === b.enumName
+  );
 }
 
 /** Deep snapshot equality — INCLUDING enum case lists, which the grid's
- * dropdowns depend on. Used to keep `lastGoodSchema` identity-stable. */
+ * dropdowns/chips depend on. Used to keep `lastGoodSchema` identity-stable. */
 export function schemaEquals(a: SchemaSnapshot | null, b: SchemaSnapshot): boolean {
   if (!a || a.length !== b.length) return false;
   return a.every((sheetA, i) => {
@@ -234,7 +242,12 @@ export function schemaEquals(a: SchemaSnapshot | null, b: SchemaSnapshot): boole
     return sheetA.columns.every((colA, j) => {
       const colB = sheetB.columns[j];
       if (colA.name !== colB.name || !columnTypeMatches(colA.type, colB.type)) return false;
-      if (colA.type.kind !== "Enum" || colB.type.kind !== "Enum") return true;
+      if (
+        (colA.type.kind !== "Enum" && colA.type.kind !== "Set" && colA.type.kind !== "List") ||
+        (colB.type.kind !== "Enum" && colB.type.kind !== "Set" && colB.type.kind !== "List")
+      ) {
+        return true;
+      }
       const casesB = colB.type.cases;
       return (
         colA.type.cases.length === casesB.length &&
@@ -577,6 +590,8 @@ export function createEditorStore(
         const sheets = get().sheets;
         const entry = Object.hasOwn(sheets, sheet) ? sheets[sheet] : undefined;
         if (!entry || row < 0 || row >= entry.rows.length) return; // unaddressable
+        const current = Object.hasOwn(entry.rows[row], column) ? entry.rows[row][column] : "";
+        if (current === value) return; // a no-op must not spend the row's pristine flag
         const rows = entry.rows.slice();
         rows[row] = { ...rows[row], [column]: value };
         const editedRows = entry.editedRows.slice();

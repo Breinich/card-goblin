@@ -10,6 +10,15 @@ const firstString = (source: string): Token & { kind: "string" } => {
   return t;
 };
 
+describe("very long physical lines", () => {
+  it("does not overflow while appending a user-sized token list", () => {
+    const depth = 50_000;
+    const source = `${"contains(".repeat(depth)}value${", Fire)".repeat(depth)}`;
+
+    expect(() => lex(source)).not.toThrow();
+  });
+});
+
 describe("composition words stay contextual", () => {
   it("does not globally reserve let, If, Else, or virtual", () => {
     expect(KEYWORDS.has("let")).toBe(false);

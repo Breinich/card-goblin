@@ -17,7 +17,12 @@
  * have been unit-testable as pure functions.
  */
 
-import type { DataDiagnostic } from "@/lib/lang";
+import {
+  formatCollectionCell,
+  parseCollectionCell,
+  type CollectionCellIssue,
+  type DataDiagnostic,
+} from "@/lib/lang";
 import type {
   SchemaColumn,
   SchemaColumnType,
@@ -61,7 +66,11 @@ export function gridTabsOf(schema: SchemaSnapshot, sheets: SheetsState): GridTab
 /** The type half of a column header: "Text", "Number", or the enum's name
  * (the demo's `suit` column reads "suit · Suit"). */
 export function columnTypeLabel(type: SchemaColumnType): string {
-  return type.kind === "Enum" ? type.enumName : type.kind;
+  if (type.kind === "Enum") return type.enumName;
+  if (type.kind === "Set" || type.kind === "List") {
+    return `${type.kind}<${type.enumName}>`;
+  }
+  return type.kind;
 }
 
 /** Full header label, e.g. "cost · Number". The component renders the two
@@ -97,6 +106,79 @@ export function cellValueOf(row: Record<string, string>, column: string): string
  * cases in declaration order. */
 export function enumOptionsOf(cases: readonly string[]): string[] {
   return ["", ...cases];
+}
+
+export type CollectionSchemaType = Extract<SchemaColumnType, { kind: "Set" | "List" }>;
+
+export interface CollectionToken {
+  /** Trimmed enum case name; empty tokens deliberately remain empty. */
+  value: string;
+  /** Present for the exact raw token rejected by the shared codec. */
+  issue?: CollectionCellIssue["kind"];
+}
+
+/**
+ * Chips for a collection cell. Valid Sets use semantic enum order and valid
+ * Lists use cell order. Invalid cells stay in raw token order so unknown,
+ * empty, and duplicate tokens remain visible and individually red.
+ */
+export function collectionTokensOf(
+  raw: string,
+  type: CollectionSchemaType,
+): CollectionToken[] {
+  const parsed = parseCollectionCell(raw, type);
+  if (parsed.valid) return parsed.items.map((value) => ({ value }));
+  const issues = new Map(parsed.issues.map((issue) => [issue.index, issue.kind]));
+  return raw.split(",").map((part, index) => ({
+    value: part.trim(),
+    issue: issues.get(index),
+  }));
+}
+
+/** Valid pasted values canonicalize; invalid values remain byte-for-byte raw. */
+export function normalizeCollectionCell(raw: string, type: CollectionSchemaType): string {
+  const parsed = parseCollectionCell(raw, type);
+  return parsed.valid ? parsed.canonical : raw;
+}
+
+export function addCollectionItem(
+  raw: string,
+  type: CollectionSchemaType,
+  value: string,
+): string {
+  if (!type.cases.includes(value)) return raw;
+  const tokens = collectionTokensOf(raw, type);
+  if (type.kind === "Set" && tokens.some((token) => token.value === value)) return raw;
+  const next = raw.trim() === "" ? value : `${raw}, ${value}`;
+  return normalizeCollectionCell(next, type);
+}
+
+export function removeCollectionItem(
+  raw: string,
+  type: CollectionSchemaType,
+  index: number,
+): string {
+  const tokens = collectionTokensOf(raw, type);
+  if (index < 0 || index >= tokens.length) return raw;
+  const next = tokens.filter((_, tokenIndex) => tokenIndex !== index).map((token) => token.value);
+  return normalizeCollectionCell(formatCollectionCell(next), type);
+}
+
+export function moveCollectionItem(
+  raw: string,
+  type: CollectionSchemaType,
+  index: number,
+  direction: -1 | 1,
+): string {
+  if (type.kind !== "List") return raw;
+  const tokens = collectionTokensOf(raw, type);
+  const destination = index + direction;
+  if (index < 0 || destination < 0 || index >= tokens.length || destination >= tokens.length) {
+    return raw;
+  }
+  const next = tokens.map((token) => token.value);
+  [next[index], next[destination]] = [next[destination], next[index]];
+  return normalizeCollectionCell(formatCollectionCell(next), type);
 }
 
 // ---------------------------------------------------------------------------
@@ -307,7 +389,7 @@ export function pasteOps(
   sheet: string,
   anchorRow: number,
   anchorColumnIndex: number,
-  columnNames: readonly string[],
+  columns: readonly (string | SchemaColumn)[],
   currentRowCount: number,
   block: readonly (readonly string[])[],
 ): PasteOp[] {
@@ -317,9 +399,14 @@ export function pasteOps(
   for (let i = 0; i < missingRows; i++) ops.push({ kind: "addRow", sheet });
   block.forEach((cells, i) => {
     cells.forEach((value, j) => {
-      const column = columnNames[anchorColumnIndex + j];
+      const column = columns[anchorColumnIndex + j];
       if (column === undefined) return; // overflow right of the schema — dropped (see above)
-      ops.push({ kind: "setCell", sheet, row: anchorRow + i, column, value });
+      const name = typeof column === "string" ? column : column.name;
+      const normalized =
+        typeof column !== "string" && (column.type.kind === "Set" || column.type.kind === "List")
+          ? normalizeCollectionCell(value, column.type)
+          : value;
+      ops.push({ kind: "setCell", sheet, row: anchorRow + i, column: name, value: normalized });
     });
   });
   return ops;

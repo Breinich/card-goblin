@@ -27,6 +27,8 @@ Column types are:
 | `Text` | anything | treated as `""` |
 | `Number` | numeric values | an error if referenced |
 | *any Enum* | one of that enum's cases (dropdown) | an error if referenced |
+| `Set<Enum>` | zero or more unique cases (tag chips) | valid empty set |
+| `List<Enum>` | zero or more ordered cases; duplicates allowed | valid empty list |
 
 A sheet may declare **zero columns** — the tab then just holds numbered rows. That's
 the idiom for decks whose content comes entirely from a `loop:`.
@@ -58,11 +60,42 @@ An enum is a named, fixed set of cases. Two uses:
 Refer to a case as `Suit.Rock`. Bare `Rock` also works wherever the expected type
 makes it unambiguous — comparing against an enum-typed reference, for instance.
 
+## Sets and lists
+
+Use a Set for unordered game tags whose display order should stay consistent, and a
+List for a symbol sequence whose order and repetitions matter:
+
+```goblin
+Enum: CardTag
+  case Armor
+  case Fire
+
+Enum: Mana
+  case Generic4
+  case Blue
+  case Red
+
+Sheet: Cards
+  column tags: Set<CardTag>
+  column cost: List<Mana>
+```
+
+A Set cell never contains the same case twice and displays/iterates in the Enum's
+declaration order. A List preserves the cell order, so `Blue, Blue, Generic4` is
+three entries. The grid presents both as chips; comma-separated text is their
+clipboard/export representation. Spaces around names are ignored. Unknown cases,
+empty entries such as `Blue,,Red`, and duplicates in a Set flag that cell red while
+preserving what was pasted. Reordering an Enum changes a Set's semantic display and
+iteration order but never silently rewrites stored rows.
+
+Use `contains([tags], CardTag.Fire)` to test membership and `ForEach` to draw every
+member. Collections do not turn into Text automatically and cannot be compared.
+
 ## How `[references]` resolve
 
 Inside a template, `[name]` is looked up in this order, innermost first:
 
-1. the nearest enclosing **`Repeat` variable** and local **`let` values**,
+1. the nearest enclosing **`Repeat`/`ForEach` variables** and local **`let` values**,
    nearest scope first,
 2. the current Template's **parameters**,
 3. the Card's **`loop` variables**,

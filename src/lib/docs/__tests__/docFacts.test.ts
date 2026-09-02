@@ -177,8 +177,8 @@ const NUMERIC_CLAIMS: {
     expected: CSS_COLOR_NAMES.size,
   },
   {
-    label: "Repeat expansion cap",
-    patterns: [/(\d[\d,]*)\s+Repeat (?:expansions|iterations) per card/g],
+    label: "Repeat/ForEach iteration cap",
+    patterns: [/(\d[\d,]*)\s+Repeat\/ForEach iterations per card/g],
     expected: REPEAT_CAP,
   },
   {

@@ -57,6 +57,7 @@
 
 import type { Program } from "./ast";
 import type { Bindings, CardBindings, LoopBinding, SheetInfo } from "./check";
+import { parseCollectionCell } from "./collections";
 import type { EvalContext } from "./eval";
 import {
   compileErrorDiagnostic,
@@ -269,6 +270,30 @@ class Generator {
             const d: DataDiagnostic = {
               code: "D001",
               message: `"${value}" is not a case of enum ${enumName} (column '${colName}', row ${rowIndex + 1})`,
+              cell: { sheet: sheetName, rowIndex, column: colName },
+            };
+            data.invalid.set(cellKey(rowIndex, colName), d);
+            this.diagnostics.push(d);
+          }
+        } else if (colInfo.type.kind === "Set" || colInfo.type.kind === "List") {
+          const enumName = colInfo.type.enumName;
+          const enumDecl = this.bindings.enums.get(enumName);
+          const parsed = parseCollectionCell(value, {
+            kind: colInfo.type.kind,
+            enumName,
+            cases: enumDecl?.cases.map((c) => c.name.name) ?? [],
+          });
+          if (!parsed.valid) {
+            const details = parsed.issues
+              .map((issue) => {
+                if (issue.kind === "empty") return `empty item ${issue.index + 1}`;
+                if (issue.kind === "duplicate") return `duplicate '${issue.value}'`;
+                return `unknown case '${issue.value}'`;
+              })
+              .join(", ");
+            const d: DataDiagnostic = {
+              code: "D001",
+              message: `"${value}" is not a valid ${colInfo.type.kind}<${enumName}> (${details}; column '${colName}', row ${rowIndex + 1})`,
               cell: { sheet: sheetName, rowIndex, column: colName },
             };
             data.invalid.set(cellKey(rowIndex, colName), d);
@@ -774,6 +799,14 @@ class Generator {
       yUnits,
       rawCell: (column) => rawCellOf(row, column),
       cellIssue: (column) => data.invalid.get(cellKey(rowIndex, column)),
+      collectionCell: (column, kind, enumName) => {
+        const enumDecl = this.bindings.enums.get(enumName);
+        return parseCollectionCell(rawCellOf(row, column), {
+          kind,
+          enumName,
+          cases: enumDecl?.cases.map((c) => c.name.name) ?? [],
+        }).items;
+      },
       emptyCellIssue: (column, typeLabel) => {
         // D003 (◆19), deduped per cell: the first referencing combination
         // creates and registers it; later ones (and other Cards) reuse it.

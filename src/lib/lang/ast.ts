@@ -16,6 +16,18 @@ export interface NameRef {
   range: Range;
 }
 
+/** A declared type. Collection constructors are contextual and therefore
+ * represented structurally rather than flattened into a spelling. */
+export type TypeRef = NameRef | CollectionTypeRef;
+
+export interface CollectionTypeRef {
+  kind: "CollectionType";
+  /** Kept as `name` so generic type-label tooling can treat every TypeRef uniformly. */
+  name: "Set" | "List";
+  elementType: NameRef;
+  range: Range;
+}
+
 // ---------------------------------------------------------------------------
 // Program structure (§3.2)
 // ---------------------------------------------------------------------------
@@ -54,8 +66,7 @@ export interface SheetDecl {
 export interface ColumnDecl {
   kind: "ColumnDecl";
   name: NameRef;
-  /** `Text`, `Number`, or an enum name — resolved in task 2. */
-  columnType: NameRef;
+  columnType: TypeRef;
   range: Range;
 }
 
@@ -63,8 +74,7 @@ export interface ColumnDecl {
 export interface VirtualColumnDecl {
   kind: "VirtualColumnDecl";
   name: NameRef;
-  /** `Text`, `Number`, or an enum name — resolved by the checker. */
-  columnType: NameRef;
+  columnType: TypeRef;
   initializer: Expr;
   range: Range;
 }
@@ -82,8 +92,7 @@ export interface TemplateDecl {
 export interface TemplateParamDecl {
   kind: "TemplateParam";
   name: NameRef;
-  /** `Text`, `Number`, `Bool`, `Color`, or an enum name. */
-  paramType: NameRef;
+  paramType: TypeRef;
   range: Range;
 }
 
@@ -115,6 +124,7 @@ export interface FaceNode {
 export type TemplateNode =
   | ElementNode
   | RepeatNode
+  | ForEachNode
   | LetNode
   | IfNode
   | TemplateCallNode;
@@ -181,6 +191,16 @@ export interface RepeatNode {
   range: Range;
 }
 
+/** `ForEach: <collection> as <item>, <index>` (◆55). */
+export interface ForEachNode {
+  kind: "ForEach";
+  collection: Expr;
+  itemVariable: NameRef | null;
+  indexVariable: NameRef | null;
+  children: TemplateNode[];
+  range: Range;
+}
+
 /**
  * `key: <expr>` — any lowercase key with any expression value (◆30; validation
  * is task 2's E008). `asVar` captures the `as <var>` clause of `loop:` lines;
@@ -201,6 +221,7 @@ export interface PropertyNode {
 
 export type Expr =
   | IfExpr
+  | CallExpr
   | BinaryExpr
   | UnaryExpr
   | NumberLit
@@ -210,6 +231,14 @@ export type Expr =
   | IdentifierExpr
   | QualifiedName
   | ErrorExpr;
+
+/** Contextual built-in call. The checker currently accepts only `contains`. */
+export interface CallExpr {
+  kind: "Call";
+  callee: NameRef;
+  arguments: Expr[];
+  range: Range;
+}
 
 /** `if c then a else b`; `else` is mandatory (§3.5) — a missing one is an E001 + ErrorExpr branch. */
 export interface IfExpr {

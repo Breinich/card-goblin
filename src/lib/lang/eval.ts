@@ -29,6 +29,7 @@ import type {
   ElementNode,
   Expr,
   FaceNode,
+  ForEachNode,
   IfNode,
   LetNode,
   RepeatNode,
@@ -79,6 +80,7 @@ export type Value =
   | { kind: "text"; value: string }
   | { kind: "bool"; value: boolean }
   | { kind: "enumCase"; enumName: string; caseName: string }
+  | { kind: "set" | "list"; enumName: string; items: readonly string[] }
   | { kind: "color"; value: string };
 
 /** A data-time failure of the current card instance (⚑8). Caught per
@@ -93,10 +95,9 @@ export class DataError extends Error {
   }
 }
 
-/** Repeat-iteration budget per card instance (◆27: 500 per card). The budget
- * is shared by both faces of one instance, and EVERY iteration of every
- * Repeat — nested included — counts toward it, so nested repeats multiply
- * against the same total. */
+/** Iteration budget per card instance (◆27/◆55: 500 per card). The budget
+ * is shared by both faces, and every Repeat/ForEach iteration — nested forms
+ * included — counts toward the same total. */
 export const REPEAT_CAP = 500;
 
 /** Structural and composition guards (§3.3 composition plan). The parser
@@ -115,8 +116,8 @@ interface BindingSlot {
 
 interface ParameterSlot extends BindingSlot {
   argument: Expr;
-  /** Snapshot of the caller's lexical Repeat values at the call edge. */
-  callerRepeats: { name: string; value: number }[];
+  /** Snapshot of the caller's typed Repeat/ForEach values at the call edge. */
+  callerRepeats: { name: string; value: Value }[];
 }
 
 interface EvalFrame {
@@ -146,6 +147,12 @@ export interface EvalContext {
   rawCell: (column: string) => string;
   /** The D001/D002 validation diagnostic for a cell of the current row. */
   cellIssue: (column: string) => DataDiagnostic | undefined;
+  /** Validated collection members in semantic runtime order. */
+  collectionCell: (
+    column: string,
+    kind: "Set" | "List",
+    enumName: string,
+  ) => readonly string[];
   /** Create-or-reuse the D003 for an empty referenced Number/Enum cell
    * (◆19): the factory dedupes per cell and registers it globally. */
   emptyCellIssue: (column: string, typeLabel: "Number" | "Enum") => DataDiagnostic;
@@ -167,9 +174,9 @@ export interface EvalContext {
     projectCardNumber: number;
     varyingUsed: boolean;
   };
-  /** Innermost-last stack of enclosing Repeat variables. */
-  repeatStack: { name: string; value: number }[];
-  /** Remaining Repeat iterations for this instance (◆27). */
+  /** Innermost-last stack of enclosing typed Repeat/ForEach variables. */
+  repeatStack: { name: string; value: Value }[];
+  /** Remaining shared Repeat/ForEach iterations for this instance (◆55). */
   budget: { remaining: number };
   /** Non-fatal rendering diagnostics collected during face evaluation —
    * currently D005 icon codes and D011 text aliases. generate.ts fills in
@@ -292,6 +299,19 @@ function evalExprInner(expr: Expr, ctx: EvalContext, axisUnits: number | null): 
       const res = ctx.card.resolutions.get(expr);
       if (res?.kind !== "enumCase") return poisoned();
       return { kind: "enumCase", enumName: res.enumName, caseName: res.caseName };
+    }
+    case "Call": {
+      if (expr.callee.name !== "contains" || expr.arguments.length !== 2) return poisoned();
+      const collection = evalExpr(expr.arguments[0], ctx, axisUnits);
+      const member = evalExpr(expr.arguments[1], ctx, axisUnits);
+      if (
+        (collection.kind !== "set" && collection.kind !== "list") ||
+        member.kind !== "enumCase" ||
+        member.enumName !== collection.enumName
+      ) {
+        return poisoned();
+      }
+      return bool(collection.items.includes(member.caseName));
     }
     case "Unary": {
       const v = evalExpr(expr.operand, ctx, axisUnits);
@@ -438,7 +458,16 @@ function resolveName(name: string, node: ResolvableNode, ctx: EvalContext): Valu
     case "repeatVar": {
       // Innermost-first by name (§3.6) — shadowing already warned (W001).
       for (let i = ctx.repeatStack.length - 1; i >= 0; i--) {
-        if (ctx.repeatStack[i].name === name) return num(ctx.repeatStack[i].value);
+        if (ctx.repeatStack[i].name === name) {
+          const value = ctx.repeatStack[i].value;
+          return value.kind === "number" ? value : poisoned();
+        }
+      }
+      return poisoned();
+    }
+    case "forEachVar": {
+      for (let i = ctx.repeatStack.length - 1; i >= 0; i--) {
+        if (ctx.repeatStack[i].name === name) return ctx.repeatStack[i].value;
       }
       return poisoned();
     }
@@ -557,6 +586,14 @@ function readCell(res: Extract<Resolution, { kind: "column" }>, ctx: EvalContext
       // Exact case-sensitive match guaranteed by validation (D001 otherwise).
       return { kind: "enumCase", enumName: res.type.enumName, caseName: trimmed };
     }
+    case "Set":
+    case "List": {
+      return {
+        kind: res.type.kind === "Set" ? "set" : "list",
+        enumName: res.type.enumName,
+        items: ctx.collectionCell(res.column, res.type.kind, res.type.enumName),
+      };
+    }
     default:
       return poisoned(); // Unknown column type — E002 owns it
   }
@@ -662,6 +699,9 @@ function emitNode(node: TemplateNode, ctx: EvalContext, out: Shape[], depth: num
     case "Repeat":
       emitRepeat(node, ctx, out, depth);
       return;
+    case "ForEach":
+      emitForEach(node, ctx, out, depth);
+      return;
     case "IfBlock":
       emitIf(node, ctx, out, depth);
       return;
@@ -721,17 +761,56 @@ function emitRepeat(node: RepeatNode, ctx: EvalContext, out: Shape[], depth: num
       throw new DataError([
         {
           code: "D004",
-          message: `Repeat expansion cap exceeded — a card may draw at most ${REPEAT_CAP} repeated elements (◆27)`,
+          message: `Repeat/ForEach expansion cap exceeded — a card may run at most ${REPEAT_CAP} iterations`,
         },
       ]);
     }
-    if (node.variable) ctx.repeatStack.push({ name: node.variable.name, value: i });
+    if (node.variable) ctx.repeatStack.push({ name: node.variable.name, value: num(i) });
     try {
       // One activation per iteration: lets depending on [i] never reuse a
       // sibling iteration's memoized value.
       emitChildren(node.children, ctx, out, depth + 1);
     } finally {
       if (node.variable) ctx.repeatStack.pop();
+    }
+  }
+}
+
+function emitForEach(node: ForEachNode, ctx: EvalContext, out: Shape[], depth: number): void {
+  const collection = evalExpr(node.collection, ctx, null);
+  if (collection.kind !== "set" && collection.kind !== "list") return poisoned();
+  // On the E005 duplicate-name recovery path the checker records the item
+  // binding as first-wins. Mirror that here so a poisoned AST never acquires
+  // a runtime binding of a different type than its recorded resolution.
+  const distinctIndex =
+    node.indexVariable !== null && node.indexVariable.name !== node.itemVariable?.name;
+  for (let index = 0; index < collection.items.length; index++) {
+    if (--ctx.budget.remaining < 0) {
+      throw new DataError([
+        {
+          code: "D004",
+          message: `Repeat/ForEach expansion cap exceeded — a card may run at most ${REPEAT_CAP} iterations`,
+        },
+      ]);
+    }
+    if (node.itemVariable) {
+      ctx.repeatStack.push({
+        name: node.itemVariable.name,
+        value: {
+          kind: "enumCase",
+          enumName: collection.enumName,
+          caseName: collection.items[index],
+        },
+      });
+    }
+    if (distinctIndex && node.indexVariable) {
+      ctx.repeatStack.push({ name: node.indexVariable.name, value: num(index) });
+    }
+    try {
+      emitChildren(node.children, ctx, out, depth + 1);
+    } finally {
+      if (distinctIndex) ctx.repeatStack.pop();
+      if (node.itemVariable) ctx.repeatStack.pop();
     }
   }
 }

@@ -16,6 +16,7 @@ same kind of thing.
 | Logic | `and`, `or`, `not` |
 | Conditional | `if [cost] > 3 then gold else grey` |
 | Enum cases | `Suit.Rock` always; bare `Rock` when it's unambiguous |
+| Collection membership | `contains([tags], CardTag.Fire)` |
 
 ## Conditionals
 
@@ -83,7 +84,8 @@ spreadsheet or CSV data exports.
 
 ## Types
 
-There are `Number`, `Text`, `Bool`, `Color`, and one type per Enum you declare.
+There are `Number`, `Text`, `Bool`, `Color`, one type per Enum you declare, and
+`Set<Enum>`/`List<Enum>` collection types.
 Checking happens as you type, so mistakes squiggle rather than producing odd cards:
 
 - arithmetic needs numbers,
@@ -91,6 +93,12 @@ Checking happens as you type, so mistakes squiggle rather than producing odd car
 - `<` `<=` `>` `>=` are **numbers only** — there's no meaningful ordering on text or
   enum cases,
 - an `if` condition must be a Bool.
+
+`contains(collection, case)` works with both Sets and Lists and produces Bool. The
+case must come from the collection's Enum. Collections may pass through `let`,
+Template parameters, and same-typed `if` branches, but they cannot be compared or
+automatically converted to Text. Collection literals and mutation are not part of
+Goblin Script; collection values originate in sheet data.
 
 **Comparisons don't chain.** `a == b == c` is an error — write `a == b and b == c`.
 

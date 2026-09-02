@@ -39,6 +39,7 @@ import type {
   EnumCase,
   Expr,
   FaceNode,
+  ForEachNode,
   IfNode,
   LetNode,
   NameRef,
@@ -50,6 +51,7 @@ import type {
   TemplateArgumentNode,
   TemplateNode,
   TemplateParamDecl,
+  TypeRef,
   VirtualColumnDecl,
 } from "./ast";
 import type { Diagnostic, Range } from "./diagnostics";
@@ -131,6 +133,10 @@ class Parser {
   private exprCtx: ExprContext | null = null;
   private exprHadError = false;
   private exprNesting = 0;
+  /** Direct call recursion has its own guard. Although arguments enter via
+   * parseExpr, keeping this explicit prevents future argument-parser changes
+   * from bypassing the never-throw nesting contract. */
+  private callNesting = 0;
   private blockDepth = 0;
   /** Range of the last consumed non-layout token — used to close node spans. */
   private lastRange: Range;
@@ -327,6 +333,35 @@ class Parser {
       );
     }
     return name;
+  }
+
+  /** Parse a simple declared type or contextual Set<Enum>/List<Enum>. */
+  private parseTypeRef(position: string): TypeRef | null {
+    const outer = this.expectIdent(`Expected a ${position} type`);
+    if (!outer) return null;
+    if ((outer.name !== "Set" && outer.name !== "List") || !this.atOp("<")) {
+      return outer;
+    }
+    this.next(); // '<'
+    const elementType = this.expectIdent(
+      `Expected an enum name inside ${outer.name}<...>`,
+    );
+    if (!elementType) return null;
+    if (!this.atOp(">")) {
+      const bad = this.peek();
+      this.error(
+        `Expected '>' after ${outer.name}<${elementType.name}, found ${this.describe(bad)}`,
+        bad.range,
+      );
+      return null;
+    }
+    const close = this.next();
+    return {
+      kind: "CollectionType",
+      name: outer.name,
+      elementType,
+      range: spanRanges(outer.range, close.range),
+    };
   }
 
   // -- program & declarations (§3.2) ---------------------------------------
@@ -554,9 +589,7 @@ class Parser {
         return;
       }
       this.next();
-      const columnType = this.expectIdent(
-        "Expected a column type (Text, Number, or an enum name)",
-      );
+      const columnType = this.parseTypeRef("column");
       if (!columnType) {
         this.skipToEol();
         return;
@@ -593,9 +626,7 @@ class Parser {
       return;
     }
     this.next();
-    const columnType = this.expectIdent(
-      "Expected a virtual column type (Text, Number, or an enum name)",
-    );
+    const columnType = this.parseTypeRef("virtual column");
     if (!columnType) {
       this.skipToEol();
       return;
@@ -717,9 +748,7 @@ class Parser {
       return null;
     }
     this.next();
-    const paramType = this.expectIdent(
-      "Expected a parameter type (Text, Number, Bool, Color, or an enum name)",
-    );
+    const paramType = this.parseTypeRef("parameter");
     if (!paramType) {
       this.skipToEol();
       return null;
@@ -762,6 +791,7 @@ class Parser {
         return this.parseElement(t.text);
       }
       if (t.text === "Repeat") return this.parseRepeat();
+      if (t.text === "ForEach") return this.parseForEach();
       if (t.text === "If") return this.parseStructuralIf();
       if (BLOCK_OPENERS.has(t.text)) {
         this.error(`'${t.text}:' is not allowed inside a template`, t.range);
@@ -861,6 +891,58 @@ class Parser {
       kind: "Repeat",
       count,
       variable,
+      children,
+      range: spanRanges(head.range, this.lastRange),
+    };
+  }
+
+  /** `ForEach: <collection> as <item>, <index>` — single-line (◆55). */
+  private parseForEach(): ForEachNode {
+    const head = this.next();
+    this.next(); // ':'
+    this.exprCtx = { multiline: false, contDepth: 0 };
+    this.exprHadError = false;
+    const collection = this.parseExpr();
+    let itemVariable: NameRef | null = null;
+    let indexVariable: NameRef | null = null;
+    const asToken = this.peek();
+    if (asToken.kind === "keyword" && asToken.word === "as") {
+      this.next();
+      itemVariable = this.expectDeclaredName("Expected an item variable after 'as'");
+      if (!itemVariable) this.exprHadError = true;
+      if (itemVariable) {
+        if (this.atOp(",")) this.next();
+        else {
+          this.exprError(
+            `Expected ',' between the ForEach item and index variables, found ${this.describe(this.peek())}`,
+            this.peek().range,
+          );
+        }
+        if (!this.exprHadError) {
+          indexVariable = this.expectDeclaredName("Expected an index variable after ','");
+          if (!indexVariable) this.exprHadError = true;
+        }
+      }
+    } else {
+      this.exprError(
+        `ForEach: needs 'as <item>, <index>' after its collection expression, found ${this.describe(asToken)}`,
+        asToken.range,
+      );
+    }
+    this.exprCtx = null;
+    if (this.exprHadError) this.skipToEol();
+    else this.finishLine();
+    this.exprHadError = false;
+    const children: TemplateNode[] = [];
+    this.parseBlockChildren(() => {
+      const node = this.parseTemplateNode();
+      if (node) children.push(node);
+    });
+    return {
+      kind: "ForEach",
+      collection,
+      itemVariable,
+      indexVariable,
       children,
       range: spanRanges(head.range, this.lastRange),
     };
@@ -1434,7 +1516,7 @@ class Parser {
       }
       case "identifier": {
         this.take(look);
-        return this.parseQualifiedTail({ name: t.text, range: t.range });
+        return this.parseIdentifierTail({ name: t.text, range: t.range });
       }
       case "keyword": {
         if (t.word === "if") {
@@ -1481,6 +1563,83 @@ class Parser {
       t.range,
     );
     return { kind: "Error", range: t.range };
+  }
+
+  /** Plain identifier, Enum.Case, or contextual built-in call syntax. */
+  private parseIdentifierTail(first: NameRef): Expr {
+    const next = this.lookahead();
+    if (next.found && next.token.kind === "op" && next.token.op === "(") {
+      if (this.callNesting >= 500) {
+        this.take(next);
+        const range = spanRanges(first.range, next.token.range);
+        this.exprError("Call expressions are too deeply nested", range);
+        return { kind: "Error", range };
+      }
+      this.callNesting++;
+      try {
+        this.take(next);
+        const args: Expr[] = [];
+        let end = next.token.range;
+        let look = this.lookahead();
+        if (look.found && look.token.kind === "op" && look.token.op === ")") {
+          this.take(look);
+          end = look.token.range;
+        } else {
+          for (;;) {
+            look = this.lookahead();
+            if (!look.found || (look.token.kind === "op" && look.token.op === ")")) {
+              this.exprError("Expected a call argument expression", look.token.range);
+              break;
+            }
+            args.push(this.parseExpr());
+            look = this.lookahead();
+            if (look.found && look.token.kind === "op" && look.token.op === ",") {
+              this.take(look);
+              const afterComma = this.lookahead();
+              if (
+                !afterComma.found ||
+                (afterComma.token.kind === "op" && afterComma.token.op === ")")
+              ) {
+                this.exprError("Expected an argument after ','", afterComma.token.range);
+                break;
+              }
+              continue;
+            }
+            if (look.found && look.token.kind === "op" && look.token.op === ")") {
+              this.take(look);
+              end = look.token.range;
+            } else {
+              this.exprError(
+                `Expected ',' or ')' after call argument, found ${this.describe(look.token)}`,
+                look.token.range,
+              );
+            }
+            break;
+          }
+          // Recovery may have stopped at the closing paren after one malformed
+          // argument; consume it so the containing property can recover cleanly.
+          look = this.lookahead();
+          if (look.found && look.token.kind === "op" && look.token.op === ")") {
+            this.take(look);
+            end = look.token.range;
+          }
+        }
+        const range = spanRanges(first.range, end);
+        // Syntax-poisoned calls become an ErrorExpr so the checker does not
+        // cascade with an arity/unknown-callee error for the same punctuation
+        // mistake. The parser diagnostic already owns this source surface.
+        if (this.exprHadError) return { kind: "Error", range };
+        return {
+          kind: "Call",
+          callee: first,
+          arguments: args,
+          range,
+        };
+      } finally {
+        this.callNesting--;
+      }
+    }
+    return this.parseQualifiedTail(first);
   }
 
   /** `Suit.Rock` — exactly one level of qualification (◆14). */

@@ -52,8 +52,10 @@ export interface SnapshotColumn {
   name: string;
   /** Display string ("Number", "Text", "enum Suit") for detail text. */
   type: string;
-  /** Set when the column is enum-typed — drives expected-enum completions. */
+  /** Set when the column is enum-backed — drives expected-enum completions. */
   enumName: string | null;
+  /** Present only for the two ◆55 collection column kinds. */
+  collectionKind?: "Set" | "List";
 }
 
 export interface SnapshotSheet {
@@ -94,10 +96,17 @@ export function buildCompletionSnapshot(
     for (const [name, info] of bindings.sheets) {
       const columns: SnapshotColumn[] = [];
       for (const [colName, col] of info.columns) {
+        const enumName =
+          col.type.kind === "Enum" || col.type.kind === "Set" || col.type.kind === "List"
+            ? col.type.enumName
+            : null;
         columns.push({
           name: colName,
           type: typeName(col.type),
-          enumName: col.type.kind === "Enum" ? col.type.enumName : null,
+          enumName,
+          ...(col.type.kind === "Set" || col.type.kind === "List"
+            ? { collectionKind: col.type.kind }
+            : {}),
         });
       }
       sheets.push({ name, columns });
@@ -113,8 +122,19 @@ export function buildCompletionSnapshot(
         name: sheet.name,
         columns: sheet.columns.map((c) => ({
           name: c.name,
-          type: c.type.kind === "Enum" ? `enum ${c.type.enumName}` : c.type.kind,
-          enumName: c.type.kind === "Enum" ? c.type.enumName : null,
+          type:
+            c.type.kind === "Enum"
+              ? `enum ${c.type.enumName}`
+              : c.type.kind === "Set" || c.type.kind === "List"
+                ? `${c.type.kind}<${c.type.enumName}>`
+                : c.type.kind,
+          enumName:
+            c.type.kind === "Enum" || c.type.kind === "Set" || c.type.kind === "List"
+              ? c.type.enumName
+              : null,
+          ...(c.type.kind === "Set" || c.type.kind === "List"
+            ? { collectionKind: c.type.kind }
+            : {}),
         })),
       });
     }
@@ -123,7 +143,10 @@ export function buildCompletionSnapshot(
     const seen = new Set<string>();
     for (const sheet of schema) {
       for (const c of sheet.columns) {
-        if (c.type.kind === "Enum" && !seen.has(c.type.enumName)) {
+        if (
+          (c.type.kind === "Enum" || c.type.kind === "Set" || c.type.kind === "List") &&
+          !seen.has(c.type.enumName)
+        ) {
           seen.add(c.type.enumName);
           enums.push({ name: c.type.enumName, cases: c.type.cases });
         }
@@ -208,7 +231,7 @@ export interface CompletionResult {
 const EXPRESSION_KEYWORDS = ["if", "then", "else", "and", "or", "not"] as const;
 
 type ElementKind = "Rectangle" | "Text" | "TextBox" | "Icon" | "Image" | "Qr";
-type StructuralKind = "Template" | "Repeat" | "If" | "Else";
+type StructuralKind = "Template" | "Repeat" | "ForEach" | "If" | "Else";
 type BlockKind = ElementKind | StructuralKind | "Card" | "Sheet" | "Enum";
 
 /** §3.3 property tables — mirrors check.ts's private ELEMENT_SPECS (pinned by
@@ -318,6 +341,7 @@ const ELEMENT_OPENERS: { key: string; detail: string }[] = [
   { key: "Image", detail: "x y width height src (fit color pivot rotate)" },
   { key: "Qr", detail: "x y size data (color background level pivot)" },
   { key: "Repeat", detail: "<count expr> as <variable>" },
+  { key: "ForEach", detail: "<Set/List expr> as <item>, <index>" },
   { key: "If", detail: "<Bool expr> — draw only the selected branch" },
 ];
 
@@ -329,7 +353,7 @@ const TOP_LEVEL_OPENERS: { key: string; detail: string }[] = [
 ];
 
 const BLOCK_HEADER_RE =
-  /^(Enum|Sheet|Template|Card|Rectangle|TextBox|Text|Icon|Image|Qr|Repeat|If|Else|Front|Back)[ \t]*:[ \t]*(.*)$/;
+  /^(Enum|Sheet|Template|Card|Rectangle|TextBox|Text|Icon|Image|Qr|Repeat|ForEach|If|Else|Front|Back)[ \t]*:[ \t]*(.*)$/;
 const WORD_CHAR = /[A-Za-z0-9_]/;
 
 // ---------------------------------------------------------------------------
@@ -383,6 +407,35 @@ function isBlankOrComment(line: string): boolean {
   return t === "" || t.startsWith("#");
 }
 
+/** Flatten the nearest indented value continuation up to the current word.
+ * This gives expression completion enough context for calls split across
+ * lines without making it depend on a successful parse. */
+function continuationExpressionPrefix(
+  lines: readonly string[],
+  lineIndex: number,
+  wordStart: number,
+): string {
+  const currentIndent = indentOf(lines[lineIndex]);
+  let headerLine = -1;
+  for (let i = lineIndex - 1; i >= 0; i--) {
+    if (isBlankOrComment(lines[i]) || indentOf(lines[i]) >= currentIndent) continue;
+    if (/^[ \t]*(?:let[ \t]+[A-Za-z][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*)[ \t]*:/.test(lines[i])) {
+      headerLine = i;
+      break;
+    }
+  }
+  if (headerLine < 0) return lines[lineIndex].slice(0, wordStart);
+  const header = lines[headerLine];
+  const afterColon = header.slice(header.indexOf(":") + 1).trim();
+  const continuation = lines
+    .slice(headerLine + 1, lineIndex)
+    .filter((line) => !isBlankOrComment(line))
+    .map((line) => line.trim());
+  return [afterColon, ...continuation, lines[lineIndex].slice(0, wordStart).trim()]
+    .filter(Boolean)
+    .join(" ");
+}
+
 // ---------------------------------------------------------------------------
 // Block-context scanning (textual, backwards from the cursor)
 // ---------------------------------------------------------------------------
@@ -399,6 +452,8 @@ interface Ancestors {
   elementKind: ElementKind | null;
   /** `Repeat … as v` variables in scope, innermost first. */
   repeatVars: string[];
+  /** `ForEach … as item, index` bindings in scope, innermost first. */
+  foreachVars: { item: string; index: string; sourceExpression: string }[];
   /** Lexical node frames, innermost first. Lets are hoisted within each. */
   lexicalFrames: { kind: StructuralKind; line: number; repeatVar: string | null }[];
   /** Set when the cursor hangs below a property line (value continuation). */
@@ -420,6 +475,7 @@ function scanAncestors(lines: string[], lineIndex: number, startIndent: number):
     topLine: -1,
     elementKind: null,
     repeatVars: [],
+    foreachVars: [],
     lexicalFrames: [],
     continuationKey: null,
   };
@@ -442,6 +498,20 @@ function scanAncestors(lines: string[], lineIndex: number, startIndent: number):
         const asMatch = /\bas[ \t]+([A-Za-z_][A-Za-z0-9_]*)/.exec(header[2]);
         if (asMatch) out.repeatVars.push(asMatch[1]);
         out.lexicalFrames.push({ kind, line: i, repeatVar: asMatch?.[1] ?? null });
+        continue;
+      }
+      if (kind === "ForEach") {
+        const asMatch = /\bas[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*,[ \t]*([A-Za-z_][A-Za-z0-9_]*)/.exec(
+          header[2],
+        );
+        if (asMatch) {
+          out.foreachVars.push({
+            item: asMatch[1],
+            index: asMatch[2],
+            sourceExpression: header[2].slice(0, asMatch.index).trim(),
+          });
+        }
+        out.lexicalFrames.push({ kind, line: i, repeatVar: null });
         continue;
       }
       if (kind === "If" || kind === "Else") {
@@ -538,9 +608,9 @@ function scanTemplateCallGraph(lines: string[]): Map<string, Set<string>> {
     if (!call || indent === 0) continue;
     const ancestors = scanAncestors(lines, i, indent);
     if (ancestors.topKind !== "Template" || !ancestors.topName) continue;
-    if (!["Template", "Repeat", "If", "Else"].includes(ancestors.innermost ?? "")) continue;
+    if (!["Template", "Repeat", "ForEach", "If", "Else"].includes(ancestors.innermost ?? "")) continue;
     const name = call[1];
-    if (["Rectangle", "Text", "TextBox", "Icon", "Image", "Qr", "Repeat", "If", "Else"].includes(name)) {
+    if (["Rectangle", "Text", "TextBox", "Icon", "Image", "Qr", "Repeat", "ForEach", "If", "Else"].includes(name)) {
       continue;
     }
     const calls = graph.get(ancestors.topName) ?? new Set<string>();
@@ -635,12 +705,24 @@ interface RefScope {
   columnSheets: Map<string, string>; // column name → owning sheet (detail text)
   loopVars: { name: string; enumName: string }[];
   repeatVars: string[];
+  foreachVars: { name: string; detail: string; enumName: string | null }[];
+  /** Collection-typed refs in lexical lookup order. Used by `contains` and
+   * ForEach item inference, including forwarded parameters/lets. */
+  collectionBindings: { name: string; kind: "Set" | "List"; enumName: string }[];
   /** Global initializers resolve globals before ambient sheet columns. */
   globalsBeforeColumns: boolean;
   certain: boolean;
 }
 
-function scanDirectLets(lines: string[], headerLine: number): string[] {
+interface ScannedLet {
+  name: string;
+  expression: string;
+}
+
+/** Hoisted direct lets plus their textual initializer. Continuation lines are
+ * flattened because collection forwarding only needs refs and `if` branches,
+ * not a full second parser. */
+function scanDirectLetBindings(lines: string[], headerLine: number): ScannedLet[] {
   const headerIndent = indentOf(lines[headerLine]);
   let childIndent = Number.POSITIVE_INFINITY;
   let end = lines.length;
@@ -654,13 +736,25 @@ function scanDirectLets(lines: string[], headerLine: number): string[] {
     childIndent = Math.min(childIndent, indent);
   }
   if (!Number.isFinite(childIndent)) return [];
-  const names: string[] = [];
+  const bindings: ScannedLet[] = [];
   for (let i = headerLine + 1; i < end; i++) {
     if (indentOf(lines[i]) !== childIndent) continue;
-    const match = /^let[ \t]+([A-Za-z][A-Za-z0-9_]*)[ \t]*:/.exec(lines[i].trim());
-    if (match && !names.includes(match[1])) names.push(match[1]);
+    const match = /^let[ \t]+([A-Za-z][A-Za-z0-9_]*)[ \t]*:[ \t]*(.*)$/.exec(
+      lines[i].trim(),
+    );
+    if (!match || bindings.some((binding) => binding.name === match[1])) continue;
+    const continuation: string[] = [];
+    for (let j = i + 1; j < end; j++) {
+      if (isBlankOrComment(lines[j])) continue;
+      if (indentOf(lines[j]) <= childIndent) break;
+      continuation.push(lines[j].trim());
+    }
+    bindings.push({
+      name: match[1],
+      expression: [match[2], ...continuation].filter(Boolean).join(" "),
+    });
   }
-  return names;
+  return bindings;
 }
 
 interface ScannedTemplateParam {
@@ -688,7 +782,7 @@ function scanDirectParams(lines: string[], headerLine: number): ScannedTemplateP
   const params: ScannedTemplateParam[] = [];
   for (let i = headerLine + 1; i < end; i++) {
     if (indentOf(lines[i]) !== childIndent) continue;
-    const match = /^param[ \t]+([A-Za-z][A-Za-z0-9_]*)[ \t]*:[ \t]*([A-Za-z][A-Za-z0-9_]*)/.exec(
+    const match = /^param[ \t]+([A-Za-z][A-Za-z0-9_]*)[ \t]*:[ \t]*((?:Set|List)[ \t]*<[ \t]*[A-Za-z][A-Za-z0-9_]*[ \t]*>|[A-Za-z][A-Za-z0-9_]*)/.exec(
       lines[i].trim(),
     );
     if (match && !params.some((param) => param.name === match[1])) {
@@ -707,14 +801,85 @@ function scanTemplateParams(lines: string[], templateName: string): ScannedTempl
   return [];
 }
 
-function scanGlobalLets(lines: string[]): string[] {
-  const names: string[] = [];
-  for (const line of lines) {
-    if (indentOf(line) !== 0) continue;
-    const match = /^let[ \t]+([A-Za-z][A-Za-z0-9_]*)[ \t]*:/.exec(line.trim());
-    if (match && !names.includes(match[1])) names.push(match[1]);
+function scanGlobalLetBindings(lines: string[]): ScannedLet[] {
+  const bindings: ScannedLet[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (indentOf(lines[i]) !== 0) continue;
+    const match = /^let[ \t]+([A-Za-z][A-Za-z0-9_]*)[ \t]*:[ \t]*(.*)$/.exec(
+      lines[i].trim(),
+    );
+    if (!match || bindings.some((binding) => binding.name === match[1])) continue;
+    const continuation: string[] = [];
+    for (let j = i + 1; j < lines.length; j++) {
+      if (isBlankOrComment(lines[j])) continue;
+      if (indentOf(lines[j]) === 0) break;
+      continuation.push(lines[j].trim());
+    }
+    bindings.push({
+      name: match[1],
+      expression: [match[2], ...continuation].filter(Boolean).join(" "),
+    });
   }
-  return names;
+  return bindings;
+}
+
+interface InferredCollectionType {
+  kind: "Set" | "List";
+  enumName: string;
+}
+
+interface CollectionSource {
+  name: string;
+  /** Null is load-bearing: a noncollection lexical binding shadows a column. */
+  type: InferredCollectionType | null;
+  expression?: string;
+}
+
+function collectionTypeFromSpelling(spelling: string): InferredCollectionType | null {
+  const match = /^(Set|List)[ \t]*<[ \t]*([A-Za-z][A-Za-z0-9_]*)[ \t]*>$/.exec(spelling);
+  return match ? { kind: match[1] as "Set" | "List", enumName: match[2] } : null;
+}
+
+function stripOuterParens(expression: string): string {
+  let value = expression.trim();
+  while (value.startsWith("(") && value.endsWith(")")) {
+    let depth = 0;
+    let wrapsWholeValue = true;
+    for (let i = 0; i < value.length; i++) {
+      if (value[i] === "(") depth++;
+      else if (value[i] === ")") depth--;
+      if (depth === 0 && i < value.length - 1) {
+        wrapsWholeValue = false;
+        break;
+      }
+    }
+    if (!wrapsWholeValue || depth !== 0) break;
+    value = value.slice(1, -1).trim();
+  }
+  return value;
+}
+
+/** Infer only the read-only forwarding forms collections support this
+ * milestone: `[ref]`, parenthesized forwarding, and same-typed `if` arms. */
+function inferCollectionExpression(
+  expression: string,
+  resolveRef: (name: string) => InferredCollectionType | null,
+): InferredCollectionType | null {
+  const value = stripOuterParens(expression);
+  const ref = /^\[([A-Za-z][A-Za-z0-9_]*)\]$/.exec(value);
+  if (ref) return resolveRef(ref[1]);
+  const conditional = /^if\b[\s\S]*?\bthen\b[ \t]+([\s\S]+)[ \t]+\belse\b[ \t]+([\s\S]+)$/.exec(
+    value,
+  );
+  if (!conditional) return null;
+  const whenTrue = inferCollectionExpression(conditional[1], resolveRef);
+  const whenFalse = inferCollectionExpression(conditional[2], resolveRef);
+  return whenTrue &&
+    whenFalse &&
+    whenTrue.kind === whenFalse.kind &&
+    whenTrue.enumName === whenFalse.enumName
+    ? whenTrue
+    : null;
 }
 
 function resolveRefScope(
@@ -783,9 +948,11 @@ function resolveRefScope(
     }
   }
   const lexical: { name: string; detail: string }[] = [];
+  const localCollectionSources: CollectionSource[] = [];
   for (const frame of ancestors.lexicalFrames) {
-    for (const name of scanDirectLets(lines, frame.line)) {
-      lexical.push({ name, detail: "local let — immutable, type inferred" });
+    for (const binding of scanDirectLetBindings(lines, frame.line)) {
+      lexical.push({ name: binding.name, detail: "local let — immutable, type inferred" });
+      localCollectionSources.push({ name: binding.name, type: null, expression: binding.expression });
     }
     if (frame.repeatVar) {
       lexical.push({ name: frame.repeatVar, detail: "repeat index (0-based)" });
@@ -796,18 +963,99 @@ function resolveRefScope(
           name: param.name,
           detail: `Template parameter — immutable ${param.type}`,
         });
+        localCollectionSources.push({
+          name: param.name,
+          type: collectionTypeFromSpelling(param.type),
+        });
       }
     }
   }
-  for (const name of scanGlobalLets(lines)) {
-    lexical.push({ name, detail: "global let — immutable, type inferred" });
+  const globalCollectionSources: CollectionSource[] = [];
+  for (const binding of scanGlobalLetBindings(lines)) {
+    lexical.push({ name: binding.name, detail: "global let — immutable, type inferred" });
+    globalCollectionSources.push({
+      name: binding.name,
+      type: null,
+      expression: binding.expression,
+    });
   }
+
+  const resolving = new Set<string>();
+  const inferSource = (source: CollectionSource): InferredCollectionType | null => {
+    if (source.type) return source.type;
+    if (!source.expression || resolving.has(source.name)) return null;
+    resolving.add(source.name);
+    const inferred = inferCollectionExpression(source.expression, resolveCollectionRef);
+    resolving.delete(source.name);
+    return inferred;
+  };
+  const resolveCollectionRef = (name: string): InferredCollectionType | null => {
+    const local = localCollectionSources.find((candidate) => candidate.name === name);
+    if (local) return inferSource(local);
+    const global = globalCollectionSources.find((candidate) => candidate.name === name);
+    if (globalInitializer && global) return inferSource(global);
+    const column = columns.find((candidate) => candidate.name === name);
+    if (column) {
+      return column.collectionKind && column.enumName
+        ? { kind: column.collectionKind, enumName: column.enumName }
+        : null;
+    }
+    return global ? inferSource(global) : null;
+  };
+
+  const foreachVars: { name: string; detail: string; enumName: string | null }[] = [];
+  for (const binding of ancestors.foreachVars) {
+    const collectionType = inferCollectionExpression(
+      binding.sourceExpression,
+      resolveCollectionRef,
+    );
+    const enumName = collectionType?.enumName ?? null;
+    foreachVars.push({
+      name: binding.item,
+      detail: enumName ? `ForEach item — enum ${enumName}` : "ForEach collection item",
+      enumName,
+    });
+    foreachVars.push({
+      name: binding.index,
+      detail: "ForEach index (0-based Number)",
+      enumName: null,
+    });
+  }
+  const collectionBindings: RefScope["collectionBindings"] = [];
+  const addSourceBindings = (sources: readonly CollectionSource[]): void => {
+    for (const source of sources) {
+      if (collectionBindings.some((binding) => binding.name === source.name)) continue;
+      const type = resolveCollectionRef(source.name);
+      if (type) collectionBindings.push({ name: source.name, ...type });
+    }
+  };
+  addSourceBindings(localCollectionSources);
+  if (globalInitializer) addSourceBindings(globalCollectionSources);
+  for (const column of columns) {
+    if (
+      collectionBindings.some((binding) => binding.name === column.name) ||
+      localCollectionSources.some((source) => source.name === column.name) ||
+      (globalInitializer && globalCollectionSources.some((source) => source.name === column.name)) ||
+      !column.collectionKind ||
+      !column.enumName
+    ) {
+      continue;
+    }
+    collectionBindings.push({
+      name: column.name,
+      kind: column.collectionKind,
+      enumName: column.enumName,
+    });
+  }
+  if (!globalInitializer) addSourceBindings(globalCollectionSources);
   return {
     lexical,
     columns,
     columnSheets,
     loopVars,
     repeatVars: ancestors.repeatVars,
+    foreachVars,
+    collectionBindings,
     globalsBeforeColumns: globalInitializer,
     certain,
   };
@@ -834,6 +1082,16 @@ function bracketSuggestions(scope: RefScope): CompletionSuggestion[] {
       insertText: name,
       kind: "variable",
       detail: "repeat index (0-based)",
+      group: 0,
+    });
+  }
+  for (const binding of scope.foreachVars) {
+    if (out.some((s) => s.label === binding.name)) continue;
+    out.push({
+      label: binding.name,
+      insertText: binding.name,
+      kind: "variable",
+      detail: binding.detail,
       group: 0,
     });
   }
@@ -925,6 +1183,25 @@ function expressionExtras(
 ): CompletionSuggestion[] {
   if (/"[ \t]*$/.test(beforeWord)) return NO_SUGGESTIONS;
   const out: CompletionSuggestion[] = [];
+  const containsCall = /\bcontains[ \t]*\([ \t]*\[([A-Za-z_][A-Za-z0-9_]*)\][ \t]*,[ \t]*$/.exec(
+    beforeWord,
+  );
+  if (containsCall) {
+    const ref = containsCall[1];
+    const enumName = scope.collectionBindings.find((binding) => binding.name === ref)?.enumName;
+    const en = snapshot.enums.find((candidate) => candidate.name === enumName);
+    if (en) {
+      for (const c of en.cases) {
+        out.push({
+          label: c,
+          insertText: c,
+          kind: "enumCase",
+          detail: `${en.name} case accepted by contains`,
+          group: 0,
+        });
+      }
+    }
+  }
   const cmp =
     /(?:\[([A-Za-z_][A-Za-z0-9_]*)\]|([A-Za-z_][A-Za-z0-9_]*)\.[A-Za-z_][A-Za-z0-9_]*)[ \t]*(?:==|!=)[ \t]*$/.exec(
       beforeWord,
@@ -933,8 +1210,12 @@ function expressionExtras(
     const ref = cmp[1];
     const enumName =
       ref !== undefined
-        ? (scope.loopVars.find((v) => v.name === ref)?.enumName ??
-          scope.columns.find((c) => c.name === ref)?.enumName ??
+        ? (scope.foreachVars.find((v) => v.name === ref)?.enumName ??
+          scope.loopVars.find((v) => v.name === ref)?.enumName ??
+          (() => {
+            const column = scope.columns.find((candidate) => candidate.name === ref);
+            return column?.collectionKind ? null : (column?.enumName ?? null);
+          })() ??
           null)
         : snapshot.enums.some((e) => e.name === cmp[2])
           ? cmp[2]
@@ -979,6 +1260,14 @@ function expressionExtras(
   for (const kw of EXPRESSION_KEYWORDS) {
     out.push({ label: kw, insertText: kw, kind: "keyword", group: 2 });
   }
+  out.push({
+    label: "contains",
+    insertText: "contains([${1:collection}], ${2:case})",
+    snippet: true,
+    kind: "keyword",
+    detail: "contains(Set/List, enum case) — Bool membership test",
+    group: 2,
+  });
   return out;
 }
 
@@ -1074,6 +1363,8 @@ function mayBeNumberInterpolation(name: string, scope: RefScope): boolean {
   if (ref.detail?.startsWith("Template parameter — immutable")) {
     return ref.detail.endsWith("Number");
   }
+  if (ref.detail?.startsWith("ForEach item")) return false;
+  if (ref.detail?.startsWith("ForEach index")) return true;
   if (ref.detail?.startsWith("built-in")) return name !== "deck";
   return true;
 }
@@ -1153,7 +1444,7 @@ function callArgumentContext(
       target === null ||
       [
         "Template", "Card", "Front", "Back", "Rectangle", "Text", "TextBox", "Icon",
-        "Image", "Qr", "Repeat", "If", "Else",
+        "Image", "Qr", "Repeat", "ForEach", "If", "Else",
       ].includes(target)
     ) {
       return null;
@@ -1179,7 +1470,20 @@ function callArgumentContext(
   return { templateName, params: scanTemplateParams(lines, templateName), argumentName: null };
 }
 
-function parameterTypeSuggestions(snapshot: CompletionSnapshot): CompletionSuggestion[] {
+function parameterTypeSuggestions(
+  snapshot: CompletionSnapshot,
+  afterColon = "",
+  genericCloseFollows = false,
+): CompletionSuggestion[] {
+  if (/(?:Set|List)[ \t]*<[ \t]*[A-Za-z0-9_]*$/.test(afterColon)) {
+    return snapshot.enums.map((en) => ({
+      label: en.name,
+      insertText: `${en.name}${genericCloseFollows ? "" : ">"}`,
+      kind: "enum" as const,
+      detail: `collection element enum — ${en.cases.length} cases`,
+      group: 0 as const,
+    }));
+  }
   const out: CompletionSuggestion[] = ["Text", "Number", "Bool", "Color"].map(
     (name) => ({
       label: name,
@@ -1197,6 +1501,22 @@ function parameterTypeSuggestions(snapshot: CompletionSnapshot): CompletionSugge
       detail: `enum parameter type — ${en.cases.length} cases`,
       group: 0,
     });
+    out.push(
+      {
+        label: `Set<${en.name}>`,
+        insertText: `Set<${en.name}>`,
+        kind: "value",
+        detail: `unique ${en.name} collection parameter`,
+        group: 0,
+      },
+      {
+        label: `List<${en.name}>`,
+        insertText: `List<${en.name}>`,
+        kind: "value",
+        detail: `ordered ${en.name} collection parameter`,
+        group: 0,
+      },
+    );
   }
   return out;
 }
@@ -1266,7 +1586,7 @@ function nodeSuggestions(
     // `If:` and `Else:` are structural in node position. Templates carrying
     // those names remain valid direct Front:/Back: values, but have no nested
     // shorthand spelling.
-    if (name === "If" || name === "Else" || name === enclosingTemplate) continue;
+    if (name === "If" || name === "Else" || name === "ForEach" || name === enclosingTemplate) continue;
     out.push({
       // Keep the contextual binding keyword and a Template named `let`
       // independently selectable after label-based deduplication.
@@ -1410,7 +1730,7 @@ export function computeCompletions(
           : virtualLine
             ? virtualEquals >= 0 && col > virtualEquals
               ? "virtual"
-              : "column"
+              : "virtual_type"
           : propLine![1] !== undefined
             ? "column"
             : propLine![2]
@@ -1471,21 +1791,33 @@ export function computeCompletions(
 
   const scope = () => resolveRefScope(lines, ancestors, currentSnapshot, globalLetContext);
   const beforeWord = before.slice(0, wordStart);
+  const genericCloseFollows = /^[ \t]*>/.test(line.slice(wordEnd));
   const callArgs = callArgumentContext(lines, lineIndex, indent);
+  const continuationBeforeWord =
+    ancestors.continuationKey !== null || (callArgs !== null && callArgs.argumentName !== null)
+      ? continuationExpressionPrefix(lines, lineIndex, wordStart)
+      : beforeWord;
 
   // -- value position on the current line -----------------------------------
   if (currentKey !== null) {
     if (currentKey === "param") {
-      return result(parameterTypeSuggestions(currentSnapshot));
+      return result(
+        parameterTypeSuggestions(
+          currentSnapshot,
+          line.slice(colonIndex, col),
+          genericCloseFollows,
+        ),
+      );
     }
     if (callArgs !== null) {
       const param = callArgs.params.find((candidate) => candidate.name === currentKey);
       return result(argumentValueSuggestions(param, beforeWord, scope(), currentSnapshot));
     }
     if (
-      !["let", "If", "Else", "Repeat"].includes(currentKey) &&
+      !["let", "If", "Else", "Repeat", "ForEach"].includes(currentKey) &&
       (ancestors.innermost === "Template" ||
         ancestors.innermost === "Repeat" ||
+        ancestors.innermost === "ForEach" ||
         ancestors.innermost === "If" ||
         ancestors.innermost === "Else")
     ) {
@@ -1502,6 +1834,7 @@ export function computeCompletions(
         ancestors,
         scope,
         currentSnapshot,
+        genericCloseFollows,
       ),
     );
   }
@@ -1511,17 +1844,20 @@ export function computeCompletions(
     const param = callArgs.params.find(
       (candidate) => candidate.name === callArgs.argumentName,
     );
-    return result(argumentValueSuggestions(param, beforeWord, scope(), currentSnapshot));
+    return result(
+      argumentValueSuggestions(param, continuationBeforeWord, scope(), currentSnapshot),
+    );
   }
   if (ancestors.continuationKey !== null) {
     return result(
       valueSuggestions(
         ancestors.continuationKey,
         before,
-        beforeWord,
+        continuationBeforeWord,
         ancestors,
         scope,
         currentSnapshot,
+        genericCloseFollows,
       ),
     );
   }
@@ -1564,6 +1900,7 @@ export function computeCompletions(
       }
       case "Template":
       case "Repeat":
+      case "ForEach":
       case "If":
       case "Else":
         return result(
@@ -1583,7 +1920,7 @@ export function computeCompletions(
             label: "column",
             insertText: "column ",
             kind: "property",
-            detail: "column <name>: Text | Number | <Enum>",
+            detail: "column <name>: Text | Number | <Enum> | Set<Enum> | List<Enum>",
             group: 0,
           },
           {
@@ -1635,6 +1972,7 @@ function valueSuggestions(
   ancestors: Ancestors,
   scope: () => RefScope,
   snapshot: CompletionSnapshot,
+  genericCloseFollows = false,
 ): CompletionSuggestion[] {
   switch (key) {
     // ---- block headers: naming positions, no completions ------------------
@@ -1655,6 +1993,11 @@ function valueSuggestions(
         return NO_SUGGESTIONS;
       }
       return expressionExtras(beforeWord, scope(), snapshot);
+    case "ForEach":
+      // `ForEach: <collection expr> as <item>, <index>` — both names are
+      // declarations, so completion is useful only before `as`.
+      if (/\bas\b/.test(afterColon)) return NO_SUGGESTIONS;
+      return expressionExtras(beforeWord, scope(), snapshot);
     case "If":
       return expressionExtras(beforeWord, scope(), snapshot);
     case "Else":
@@ -1663,6 +2006,30 @@ function valueSuggestions(
       return expressionExtras(beforeWord, scope(), snapshot);
     case "virtual":
       return expressionExtras(beforeWord, scope(), snapshot);
+    case "virtual_type":
+      return [
+        {
+          label: "Text",
+          insertText: "Text",
+          kind: "value",
+          detail: "built-in virtual column type",
+          group: 0,
+        },
+        {
+          label: "Number",
+          insertText: "Number",
+          kind: "value",
+          detail: "built-in virtual column type",
+          group: 0,
+        },
+        ...snapshot.enums.map((e) => ({
+          label: e.name,
+          insertText: e.name,
+          kind: "enum" as const,
+          detail: "enum virtual column type",
+          group: 0 as const,
+        })),
+      ];
     case "Front":
     case "Back":
       return snapshot.templates.map((t) => ({
@@ -1873,19 +2240,45 @@ function valueSuggestions(
 
     // ---- Sheet: `column <name>: <type>` ------------------------------------
     case "column": {
+      if (/(?:Set|List)[ \t]*<[ \t]*[A-Za-z0-9_]*$/.test(afterColon)) {
+        return snapshot.enums.map((e) => ({
+          label: e.name,
+          insertText: `${e.name}${genericCloseFollows ? "" : ">"}`,
+          kind: "enum" as const,
+          detail: `collection element enum — ${e.cases.length} cases`,
+          group: 0 as const,
+        }));
+      }
       const builtins: CompletionSuggestion[] = [
         { label: "Text", insertText: "Text", kind: "value", detail: "built-in column type", group: 0 },
         { label: "Number", insertText: "Number", kind: "value", detail: "built-in column type", group: 0 },
       ];
-      return [
-        ...builtins,
-        ...snapshot.enums.map((e) => ({
+      const enums = snapshot.enums.flatMap((e) => [
+        {
           label: e.name,
           insertText: e.name,
           kind: "enum" as const,
           detail: "enum column — dropdown in the grid",
           group: 0 as const,
-        })),
+        },
+        {
+          label: `Set<${e.name}>`,
+          insertText: `Set<${e.name}>`,
+          kind: "value" as const,
+          detail: "unique enum tags — chip editor",
+          group: 0 as const,
+        },
+        {
+          label: `List<${e.name}>`,
+          insertText: `List<${e.name}>`,
+          kind: "value" as const,
+          detail: "ordered enum sequence — duplicates allowed",
+          group: 0 as const,
+        },
+      ]);
+      return [
+        ...builtins,
+        ...enums,
       ];
     }
     case "case":

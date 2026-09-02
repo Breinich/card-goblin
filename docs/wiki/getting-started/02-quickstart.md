@@ -35,7 +35,8 @@ Sheet: Monsters
 ```
 
 A `Sheet` declares a tab in the spreadsheet panel and the columns on it. Column types
-are `Text`, `Number`, or any Enum you declared. **The code owns the columns; you own
+are `Text`, `Number`, any Enum you declared, or a multi-enum `Set<Enum>`/`List<Enum>`.
+**The code owns the columns; you own
 the rows.** Add a column here and it appears in the grid; rename one and the data
 follows it.
 

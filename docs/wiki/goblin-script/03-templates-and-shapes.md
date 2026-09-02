@@ -280,7 +280,7 @@ Rotation changes how a shape is **painted, nothing more**: a rotated
 outside 0–360 work the obvious way — `rotate: -90` is a quarter-turn
 counter-clockwise, the same as `270`.
 
-## `Repeat` — the interesting one
+## `Repeat` — numeric repetition
 
 ```goblin
 Repeat: [health] as i
@@ -299,8 +299,29 @@ and arcs are all just math on `[i]`.
 - The count can come from data (`Repeat: [health] as i`) or be computed.
 - Repeats nest freely — a grid is a repeat inside a repeat.
 - The count expression must fit on **one line**.
-- Cap: **500 Repeat expansions per card**. Every iteration of every `Repeat`
+- Cap: **500 Repeat/ForEach iterations per card**. Every iteration of either form
   counts once against the same budget, including outer and inner iterations in
   nested repeats — it is not a count of the shapes eventually drawn. Crossing
   the cap produces D004 and makes that affected card an error placeholder; it
   does not keep partially truncated artwork.
+
+## `ForEach` — collection members
+
+`ForEach` draws its children once for every member of a `Set<Enum>` or `List<Enum>`.
+The first binding is the enum value; the second is its zero-based position:
+
+```goblin
+ForEach: [cost] as symbol, i
+  Image:
+    x: 2 + [i] * 3
+    y: 2
+    width: 2.5
+    height: 2.5
+    src: "asset:mana_[symbol]"
+```
+
+Sets iterate in Enum declaration order. Lists preserve their cell order and repeat
+duplicate entries. Empty collections draw nothing. `ForEach` nests with itself and
+`Repeat`; all iterations share the same 500-per-card safety budget. The header must
+fit on one line. As with Template calls from inside `Repeat`, pass an item or index
+as an explicit Template argument when a called Template needs it.

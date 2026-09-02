@@ -13,20 +13,25 @@ import {
   type SheetsState,
 } from "@/app/editor/_store/editorStore";
 import {
+  addCollectionItem,
   applyPasteOps,
   buildFlagIndex,
   cellEditReduce,
   cellFlagKey,
   cellValueOf,
   clampColumnWidth,
+  collectionTokensOf,
   columnHeaderLabel,
   columnTypeLabel,
   enumOptionsOf,
   gridTabsOf,
   isPristineRow,
+  moveCollectionItem,
+  normalizeCollectionCell,
   parseClipboardBlock,
   pasteCommitsDirectly,
   pasteOps,
+  removeCollectionItem,
   resolveIndexEdit,
   type PasteOp,
   DEFAULT_COLUMN_WIDTH_PX,
@@ -85,6 +90,18 @@ describe("column headers", () => {
     ).toBe("suit · Suit");
     expect(columnTypeLabel({ kind: "Enum", enumName: "Rank", cases: [] })).toBe("Rank");
   });
+
+  it("collection columns show both collection kind and enum identity", () => {
+    expect(
+      columnHeaderLabel({
+        name: "tags",
+        type: { kind: "Set", enumName: "Element", cases: ["Fire"] },
+      }),
+    ).toBe("tags · Set<Element>");
+    expect(
+      columnTypeLabel({ kind: "List", enumName: "Mana", cases: ["Blue"] }),
+    ).toBe("List<Mana>");
+  });
 });
 
 describe("column sizing", () => {
@@ -132,6 +149,59 @@ describe("enumOptionsOf", () => {
       "Scissors",
     ]);
     expect(enumOptionsOf([])).toEqual([""]);
+  });
+});
+
+describe("collection chip operations", () => {
+  const setType = {
+    kind: "Set" as const,
+    enumName: "Element",
+    cases: ["Fire", "Water", "Armor"],
+  };
+  const listType = {
+    kind: "List" as const,
+    enumName: "Mana",
+    cases: ["Blue", "Red", "Generic4"],
+  };
+
+  it("valid Sets display and normalize in enum order while Lists preserve duplicates and order", () => {
+    expect(collectionTokensOf("Armor, Fire", setType)).toEqual([
+      { value: "Fire" },
+      { value: "Armor" },
+    ]);
+    expect(normalizeCollectionCell(" Armor,Fire ", setType)).toBe("Fire, Armor");
+    expect(collectionTokensOf("Blue, Blue, Generic4", listType)).toEqual([
+      { value: "Blue" },
+      { value: "Blue" },
+      { value: "Generic4" },
+    ]);
+  });
+
+  it("invalid raw tokens remain in physical order and identify unknown, empty, and duplicate chips", () => {
+    expect(collectionTokensOf("Armor,,Mystery, Armor", setType)).toEqual([
+      { value: "Armor" },
+      { value: "", issue: "empty" },
+      { value: "Mystery", issue: "unknown" },
+      { value: "Armor", issue: "duplicate" },
+    ]);
+    expect(normalizeCollectionCell("Armor,,Mystery", setType)).toBe("Armor,,Mystery");
+  });
+
+  it("Set add is unique and enum-ordered; List add permits duplicates", () => {
+    expect(addCollectionItem("Armor", setType, "Fire")).toBe("Fire, Armor");
+    expect(addCollectionItem("Fire, Armor", setType, "Armor")).toBe("Fire, Armor");
+    expect(addCollectionItem("Blue", listType, "Blue")).toBe("Blue, Blue");
+    expect(addCollectionItem("", listType, "Red")).toBe("Red");
+  });
+
+  it("removes exact chips and only reorders Lists within bounds", () => {
+    expect(removeCollectionItem("Blue, Blue, Red", listType, 1)).toBe("Blue, Red");
+    expect(removeCollectionItem("Fire,,Armor", setType, 1)).toBe("Fire, Armor");
+    expect(moveCollectionItem("Blue, Red, Blue", listType, 1, -1)).toBe(
+      "Red, Blue, Blue",
+    );
+    expect(moveCollectionItem("Blue, Red", listType, 0, -1)).toBe("Blue, Red");
+    expect(moveCollectionItem("Fire, Armor", setType, 0, 1)).toBe("Fire, Armor");
   });
 });
 
@@ -394,6 +464,52 @@ describe("pasteOps", () => {
       { kind: "addRow", sheet: "Blanks" },
     ]);
   });
+
+  it("canonicalizes valid collection cells by schema but preserves invalid raw text", () => {
+    const columns = [
+      { name: "name", type: { kind: "Text" as const } },
+      {
+        name: "tags",
+        type: {
+          kind: "Set" as const,
+          enumName: "Element",
+          cases: ["Fire", "Water", "Armor"],
+        },
+      },
+      {
+        name: "cost",
+        type: {
+          kind: "List" as const,
+          enumName: "Mana",
+          cases: ["Blue", "Red", "Generic4"],
+        },
+      },
+    ];
+    expect(
+      pasteOps("Cards", 0, 0, columns, 1, [
+        ["Ward", "Armor, Fire", " Blue,Blue, Generic4 "],
+      ]),
+    ).toEqual<PasteOp[]>([
+      { kind: "setCell", sheet: "Cards", row: 0, column: "name", value: "Ward" },
+      { kind: "setCell", sheet: "Cards", row: 0, column: "tags", value: "Fire, Armor" },
+      {
+        kind: "setCell",
+        sheet: "Cards",
+        row: 0,
+        column: "cost",
+        value: "Blue, Blue, Generic4",
+      },
+    ]);
+    expect(pasteOps("Cards", 0, 1, columns, 1, [["Fire,,Bogus"]])).toEqual<PasteOp[]>([
+      {
+        kind: "setCell",
+        sheet: "Cards",
+        row: 0,
+        column: "tags",
+        value: "Fire,,Bogus",
+      },
+    ]);
+  });
 });
 
 describe("pasteCommitsDirectly (MINOR-1 routing)", () => {
@@ -402,7 +518,7 @@ describe("pasteCommitsDirectly (MINOR-1 routing)", () => {
     expect(pasteCommitsDirectly([["a"], ["b"]], true)).toBe(true);
   });
 
-  it("a 1×1 payload stays native on a text cell, commits on an enum cell", () => {
+  it("a 1×1 payload stays native on a text cell, commits on enum/collection controls", () => {
     // Text input: native paste lands in the draft, commits on blur.
     expect(pasteCommitsDirectly([["Rock"]], false)).toBe(false);
     // Enum <select>: no draft exists — native paste would be a silent no-op.

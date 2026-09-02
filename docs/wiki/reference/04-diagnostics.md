@@ -56,10 +56,10 @@ posture stated in the table.
 
 | Code | Meaning | Result |
 |---|---|---|
-| `D001` | Cell value is not a case of its enum column | Affected cards become placeholders |
+| `D001` | Cell value is not valid for its enum type: an unknown case, or a Set/List with an unknown or empty item or duplicate Set member | Affected cards become placeholders |
 | `D002` | Cell is not numeric in a Number column | Affected cards become placeholders |
-| `D003` | An edited row has an empty Number or enum cell that generated content needs | Affected cards become placeholders |
-| `D004` | `Repeat` count is negative/non-integer, or the cumulative budget exceeds 500 expansions | Affected card becomes a placeholder; no partial face is kept |
+| `D003` | An edited row has an empty Number or single-enum cell that generated content needs; empty Sets/Lists are valid | Affected cards become placeholders |
+| `D004` | `Repeat` count is negative/non-integer, or the shared `Repeat`/`ForEach` budget exceeds 500 iterations | Affected card becomes a placeholder; no partial face is kept |
 | `D005` | A computed `Icon` code or inline marker is unknown | Diagnostic only; the failed ligature/raw marker remains visible |
 | `D006` | `count:` is negative, non-integer, or cannot be evaluated | One placeholder for that row × loop-case combination |
 | `D007` | One `Card:` block exceeds 2,000 physical instances | That block is truncated and generation continues |

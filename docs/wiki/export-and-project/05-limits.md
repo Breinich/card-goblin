@@ -40,12 +40,12 @@ to read them now than to discover them three hours into a deck.
 
 ## Size caps
 
-- **500 Repeat expansions per card.** Every iteration of every `Repeat` counts,
-  including nested outer and inner iterations.
+- **500 structural iterations per card.** Every iteration of every `Repeat` and
+  `ForEach` counts, including nested outer and inner iterations.
 - **2,000 physical cards per `Card:` block.**
 
 Both exist so a typo in a data cell can't hang the editor, but their failure posture
-differs. Crossing the Repeat budget is D004 and makes the affected card an error
+differs. Crossing the shared iteration budget is D004 and makes the affected card an error
 placeholder — no partially truncated face is kept. Crossing the physical-card cap is
 D007 and truncates that Card block with a note.
 

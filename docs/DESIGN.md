@@ -62,7 +62,7 @@ Every decision, its choice, and the one-line justification. Sections below elabo
 | ◆24 | Text in v1 | single line, no wrapping | Text layout/wrapping is a real subsystem; deferred deliberately (§8) |
 | ◆25 | Multiple loops | allowed; nested cross-product in declaration order | Trivial in the generator; avoids arbitrary limitation |
 | ◆26† | Sheet data lifecycle | compile never deletes data; orphaned columns kept for the session; **same-position/same-type column rename migrates data** | Data must survive typos *and* committed renames |
-| ◆27† | Expansion caps | 500 `Repeat` expansions per card **and 2,000 generated instances per Card** | A bad cell must not hang the preview — at either the repeat or the generator level |
+| ◆27† | Expansion caps | 500 shared `Repeat`/`ForEach` iterations per card **and 2,000 generated instances per Card** | A bad cell must not hang the preview — at either the structural-iteration or generator level |
 | ◆28 | Dicier style | slice loads **Flat-Dark** only; `style:` property deferred — **superseded**: M2 shipped all ten faces via `style:` (§3.3) | One good default at slice time; style switching is additive |
 | ◆29† | Pristine rows | never-edited all-empty rows are **dimmed in the grid and excluded from generation** (status bar reports exclusions) | Adding a row shouldn't spray D003 errors ×(loop cases) before the user can type |
 | ◆30† | Keyword policy | **contextual keywords**: only block-opening words + expression-structure words are reserved; property names are ordinary identifiers; `[brackets]` always mean data refs | Without this, `column count:` and `[count]` in our own demo are illegal |
@@ -96,6 +96,7 @@ the section that elaborates it:
 | ◆52 | Resolved-text aliases (§3.3.2, §7.5) | `{alias:name}` in resolved `Text`/`TextBox` content expands a top-level Text-valued `let name:` **exactly one level**, before existing color/icon/asset markers parse; unknown, non-Text, and non-global targets remain raw with non-fatal D011 | Shared marker-rich fragments need reuse even when the alias marker comes from sheet data. One level avoids a second recursive language, alias cycles, and surprising local-scope capture; raw fallback plus a data-time notice preserves the gentle marker behavior of ◆44/◆47 without hiding a misspelling |
 | ◆53 | Explicit named project lifecycle (§7.8) | The editor starts behind a non-dismissible project chooser; all users can name/create/import/recover a browser project, admins can additionally create/open revisioned project-ID-scoped cloud projects, `/admin` exclusively owns authentication, and project-file v1/v2 portability remains a release-blocking compatibility contract | Multiple cloud projects cannot safely be layered onto the eager demo, one autosave key, global asset library, and fixed `projects/default` target. A bootstrap authority boundary plus immutable storage IDs prevents local recovery loss, cross-project asset leakage, and late writes landing in the wrong project |
 | ◆54 | Selective PDF export (§6.1) | PDF export opens on **All** but can switch to a transient **Custom** set of generated instances, chosen from a virtualized thumbnail grid or project-card number ranges; selection filters the immutable model before the existing layout runs | Large projects need small print runs without editing sheet rows or generation counts. Generated-instance identity handles loops/copies correctly, while reusing the layout keeps compacting, duplex pairing, preview, image pre-flight, and progress consistent by construction |
+| ◆55 | Multi-enum collections (§3.1–§3.8) | Physical columns and Template parameters may use **`Set<Enum>`** (unique, enum-ordered tags) or **`List<Enum>`** (cell-ordered, duplicates allowed); `contains(collection, case)` tests membership and contextual `ForEach: collection as item, index` renders each member | Tags and ordered cost symbols share one typed value pipeline without encoding game logic in Text; separating Set from List makes uniqueness, ordering, and duplicate semantics explicit |
 
 ---
 
@@ -111,7 +112,7 @@ Working name: **Goblin script**, file extension `.goblin` (cosmetic, revisit fre
   `let name:`, or a `virtual column name: Type =` initializer may
   continue: its expression extends across subsequent lines while they are indented
   deeper than the key. Block headers (`Enum:`, `Sheet:`, `Template:`, `Card:`,
-  `Rectangle:`, `Text:`, `TextBox:`, `Icon:`, `Image:`, `Qr:`, `Repeat:`, `Front:`,
+  `Rectangle:`, `Text:`, `TextBox:`, `Icon:`, `Image:`, `Qr:`, `Repeat:`, `ForEach:`, `Front:`,
   `Back:`, `If:`, `Else:`, and Template-call headers) never continue — their
   deeper-indented lines are children. A call argument itself is an ordinary property-like
   expression and may continue. Consequently `Repeat:` and `If:` expressions
@@ -136,11 +137,14 @@ Working name: **Goblin script**, file extension `.goblin` (cosmetic, revisit fre
   keyword `full` in a geometry position. Reserved words cannot be used as
   **declared names** (declaration names, column names, enum cases, loop/repeat
   variables) — E001; block-opener words remain usable in value positions (that is
-  how `column name: Text` names the `Text` type).
-  `let`, `param`, `If`, `Else`, and `virtual` are deliberately **contextual**, not additions
+  how `column name: Text` names the `Text` type). Comma is punctuation inside
+  built-in calls and `ForEach` headers; angle brackets delimit collection type
+  arguments only in type positions.
+  `let`, `param`, `If`, `Else`, `ForEach`, `Set`, `List`, `contains`, and `virtual` are deliberately **contextual**, not additions
   to this reserved list: only `let <name>:` at program/template-node indentation,
   `param <name>: <Type>` directly inside a Template,
-  `If:`/`Else:` in template-node position, and `virtual column` inside a Sheet are
+  `If:`/`Else:` and `ForEach:` in template-node position, `Set<Enum>`/`List<Enum>`
+  in type position, `contains(...)` in expression position, and `virtual column` inside a Sheet are
   structural. Thus `column let: Text`, `column virtual: Text`, `Template: If`,
   `Template: Else`, and `Front: If` retain their old meanings. A single `=` is only
   the separator in a virtual-column declaration; equality remains `==`.
@@ -180,8 +184,10 @@ Card: Monster
 
 - **Enum** — named set of cases. Case names unique within the enum.
 - **Sheet** — declares the schema of one spreadsheet tab (⚑3). Column types: `Text`,
-  `Number`, or any declared enum name. The grid window renders exactly these columns;
-  enum columns become dropdowns; rows are data and live outside the code (⚑12).
+  `Number`, any declared enum name, `Set<Enum>`, or `List<Enum>` (◆55). A collection's
+  element type must be an Enum; nesting and `Set<Text>`/`List<Number>` are E002.
+  The grid window renders exactly these columns; enum columns become dropdowns and
+  collection columns become chip editors; rows are data and live outside the code (⚑12).
   A Sheet may declare **zero columns** (⚑13†): its tab shows numbered rows with
   add/remove only — the idiom for loop-only decks that just need a row count.
   A Sheet may also declare `virtual column <name>: <Type> = <expression>` (◆48).
@@ -189,13 +195,14 @@ Card: Monster
   that Card's row/loop/generated-identity context. They are absent from the grid and
   project row payload, cannot be edited or referenced as sheet bindings, and exist
   only in Export Data. Their names must be unique across the Sheet's physical and
-  virtual columns. `Text`, `Number`, and enum types use the ordinary expression type
+  virtual columns. Collection-typed virtual columns are not supported; `Text`, `Number`, and enum types use the ordinary expression type
   and Text-coercion rules. The initializer follows the same indented continuation
   rule as a property or `let` initializer.
 - **Template** — a named list of drawable nodes. It may declare any number of required,
   immutable `param <name>: <Type>` values directly in its body, in any position; they
   are hoisted across the whole Template activation. Types are `Text`, `Number`, `Bool`,
-  `Color`, or an enum name. Parameters are not legal inside `If`/`Else`/`Repeat`.
+  `Color`, an enum name, `Set<Enum>`, or `List<Enum>`. Parameters are not legal
+  inside `If`/`Else`/`Repeat`/`ForEach`.
 - **Card** — a card *type*: binds a sheet (⚑13), physical size, unit grid, optional
   loops, copy count, and front/back templates. `Front:`/`Back:` take a template name
   inline; deeper-indented `name: expression` lines supply that Template's parameters.
@@ -210,8 +217,8 @@ Card: Monster
 
 ### 3.3 Template nodes, conditionals, composition, and elements
 
-A Template body, an `If`/`Else` branch, or a `Repeat` body may contain drawable
-elements, local `let` bindings, nested `If`/`Repeat`, and Template calls. Only the
+A Template body, an `If`/`Else` branch, or a `Repeat`/`ForEach` body may contain drawable
+elements, local `let` bindings, nested `If`/`Repeat`/`ForEach`, and Template calls. Only the
 direct Template body may additionally contain `param` declarations.
 
 - **Structural conditionals:** `If: <Bool expression>` has an optional `Else:` as
@@ -225,7 +232,7 @@ direct Template body may additionally contain `param` declarations.
   type, and are lazy/cached once per call activation. Forwarding therefore requires
   `callee_name: [caller_name]`. Calls flatten at that source position, preserving
   z-order. A callee does **not** otherwise capture caller local lets, parameters, or
-  caller `Repeat` variables; it sees its own parameters/locals, program globals,
+  caller iteration variables; it sees its own parameters/locals, program globals,
   Card loops, columns, and generation built-ins. Missing, duplicate, extra, or
   wrongly typed arguments are compile errors. Templates named `If` or `Else` remain
   valid direct `Front:`/`Back:` targets, but cannot use nested-call shorthand.
@@ -431,6 +438,22 @@ Repeat: [health] as i
     code: "HEARTS"
 ```
 
+#### 3.3.8 ForEach
+
+`ForEach: <Set<Enum> or List<Enum> expression> as <item>, <index>` is a
+single-line contextual template node (◆55). It emits its children once per
+member. `[item]` has the collection's Enum type and `[index]` is a zero-based
+Number. Set iteration follows the Enum's current declaration order regardless
+of the physical cell token order; List iteration preserves cell order and
+duplicates. Empty collections emit nothing. Both bindings are lexical, may be
+shadowed with the ordinary W001 posture, and are available to nested children;
+called Templates receive them only through explicit parameters.
+
+Every `ForEach` iteration charges the same per-card 500-iteration budget as
+`Repeat`; nesting either form shares one counter and fails atomically with D004.
+`ForEach` is contextual like `If`: it is not a reserved declared name, although
+a Template named `ForEach` cannot use nested-call shorthand at that spelling.
+
 ### 3.4 Geometry (⚑7†)
 
 - `size:` picks a physical preset: `poker` 63.5×88.9 mm, `bridge` 57.15×88.9,
@@ -511,14 +534,15 @@ Repeat: [health] as i
 
 Precedence, low→high: `if/then/else` chains → `or` → `and` → `not` →
 comparisons (`== != < <= > >=`) → `+ -` → `* / %` → unary `-` → primary
-(literal, `[ref]`, enum case, keyword, parenthesized). Comparisons are
+(literal, `[ref]`, enum case, keyword, built-in call, parenthesized). Comparisons are
 **non-associative**: `a == b == c` is E001 with a hint to use `and` or
 parentheses — chained comparisons read as math but don't mean it.
 Equality (`==`/`!=`) requires both sides to share a type (Number, Text, or the
 same Enum); **ordering comparisons (`< <= > >=`) are Number-only** — there is no
 useful total order on Text or enum cases a game designer should rely on.
 
-- **Types:** `Number`, `Text`, `Bool`, `Color`, each `Enum`, plus contextual geometry
+- **Types:** `Number`, `Text`, `Bool`, `Color`, each `Enum`, `Set<Enum>`,
+  `List<Enum>` (◆55), plus contextual geometry
   keywords. Checked statically wherever the schema allows (⚑3): arithmetic needs
   Numbers, comparisons need matching types, `if` conditions need Bool, both branches
   of an `if` must agree, `else` is mandatory (an expression must produce a value).
@@ -526,6 +550,21 @@ useful total order on Text or enum cases a game designer should rely on.
   Number and Enum values coerce to Text (trailing zeros trimmed; enum prints its
   case name). No other implicit coercions; Bool/Color in a Text position is E003.
   This keeps the README's flagship `text: [cost]` legal.
+- **Collections (◆55):** `Set<E>` contains zero or more unique cases of E and
+  has semantic order equal to E's declaration order. `List<E>` contains zero
+  or more cases of E in cell order and permits duplicates. The empty cell is a
+  valid empty collection. The textual cell codec splits comma-separated case
+  names and trims surrounding whitespace; unknown cases, empty items (`A,,B`),
+  and duplicate Set members are D001. Invalid text remains stored and visible.
+  Collections do not coerce to Text and cannot be compared. They may flow
+  through parameters, `let`, and same-typed `if` branches, but this milestone
+  adds no literals, mutation, concatenation, sorting, filtering, or virtual
+  collection columns.
+- **Built-in membership (◆55):** `contains(collection, case)` returns Bool.
+  The case must belong to the collection's element Enum; a mismatch is E003.
+  Calls have ordinary comma-separated expression arguments, but `contains` is
+  the only callable name in this milestone and unknown callees are E002. The
+  built-in namespace is contextual, so bindings named `contains` remain legal.
 - **Bare names resolve by expected type (◆14†, ◆21†, ◆30†):** in a position whose
   expected type is known — a Color property, a comparison against an enum-typed ref,
   an enum-typed `if` branch — a bare identifier resolves against that type's
@@ -548,7 +587,7 @@ useful total order on Text or enum cases a game designer should rely on.
 
 `[name]` resolves, innermost first:
 
-1. local `let` and enclosing `Repeat` bindings, nearest lexical scope first,
+1. local `let` and enclosing `Repeat`/`ForEach` bindings, nearest lexical scope first,
 2. the current Template's parameters,
 3. the Card's `loop` variables,
 4. the bound sheet's columns,
@@ -614,14 +653,14 @@ prevention" promise, delivered by ⚑3 + ⚑5.
 Bindings in one lexical block are hoisted and visible throughout that block and its
 descendants. Direct Template parameters are likewise hoisted, immutable, and cached
 once per activation; their arguments evaluate in the caller's scope. Local lets are cached once per activation of their Template call,
-selected branch, or `Repeat` iteration; globals are cached once per evaluation root
+selected branch, or `Repeat`/`ForEach` iteration; globals are cached once per evaluation root
 (`count:`, each face, and each `[card]`-divergent copy). Values are lazy: unused lets
 read no cells and an untaken branch evaluates nothing. References in either branch
 still count for static use checks. A called Template starts its own lexical frame and
-does not capture caller parameters, locals, or caller Repeat indices; only declared,
+does not capture caller parameters, locals, or caller iteration bindings; only declared,
 explicitly passed arguments cross that boundary.
 
-Same-scope duplicate lets are E005. A narrower local let, Repeat variable, or Card
+Same-scope duplicate lets are E005. A narrower local let, Repeat/ForEach variable, or Card
 loop hiding an outer binding is W001; when an existing sheet column hides a new global,
 the warning is anchored once at the global declaration so untouched sheet code does
 not gain a new warning range. W002 applies to lets with no syntactic reference in
@@ -651,7 +690,7 @@ declaration and does not force per-copy evaluation.
 Generation for a Card stops at **2,000 instances** (◆27†) with a D007 entry — a bad
 `count` cell must not freeze the tab any more than a bad `Repeat` may.
 
-Front and back element trees evaluate in that context; `Repeat` expands; the output is
+Front and back element trees evaluate in that context; `Repeat` and `ForEach` expand; the output is
 a fully resolved **RenderModel** (concrete numbers/strings/colors only — the renderer
 never sees an expression). Each instance also carries an immutable export-data record:
 the bound Sheet's declared physical cell text plus its virtual-column results evaluated
@@ -691,10 +730,10 @@ or truncation as stated:
 
 | Code | Meaning |
 |---|---|
-| D001 | cell value not a case of the column's enum |
+| D001 | cell value not valid for its enum type: an unknown single-enum case, or a collection with an unknown/empty item or duplicate Set member |
 | D002 | cell not numeric in a Number column |
-| D003 | empty Number/Enum cell referenced by a template (edited rows only, ◆29) |
-| D004 | repeat count negative/non-integer, or cumulative Repeat expansion budget > 500 → affected card placeholder (every nested iteration counts; never partial truncation) |
+| D003 | empty Number/single-Enum cell referenced by a template (edited rows only, ◆29); an empty Set/List is valid |
+| D004 | repeat count negative/non-integer, or cumulative Repeat/ForEach iteration budget > 500 → affected card placeholder (every nested iteration counts; never partial truncation) |
 | D005 | computed icon code not in the known list (Icon `code:` or an inline marker, ◆44) — the icon/marker still renders (the failed ligature or raw marker text is its own visible indicator); diagnostic only, not a placeholder |
 | D006 | `count:` non-integer, negative, or unevaluable → one placeholder per row×case combination † |
 | D007 | per-Card instance cap (2,000) exceeded — generation truncated † |
@@ -1078,12 +1117,12 @@ warning has been enough in practice — §9.)
 - **No clean compile required:** the cursor's *context* comes from a cheap textual
   scan of the document — indentation + nearest block headers walking upward,
   hoisted Template parameters/global/local lets, explicit call-argument blocks,
-  `If`/`Else`, `Repeat`/`loop` `as`-variables, and a
+  `If`/`Else`, `Repeat`/`loop` variables, typed `ForEach` item/index variables, and a
   transitive whole-document Template-call→using-Card scan
   (completions follow §3.6's per-using-Card rule). Unrecognizable ancestors are
   stepped over; when the scan cannot place the cursor at all, bracket completions
   degrade to the union of all sheets' columns rather than to silence.
-- **What completes where:** `[` → Template parameters/local lets/Repeat variables, the enclosing Card's
+- **What completes where:** `[` → Template parameters/local lets/Repeat and `ForEach` variables, the enclosing Card's
   (or the using Cards' union) loops and sheet columns, globals, then built-ins, inside
   string interpolation too
   (◆30); property-key positions → the block kind's key set with type-hint details
@@ -1096,13 +1135,16 @@ warning has been enough in practice — §9.)
   with each code's source-list section header as detail (`DICIER_CODE_CATEGORIES`,
   generated alongside `DICIER_CODES`); `Enum.` → that enum's cases; bare cases where
   ◆14 makes them legal (expected type first, otherwise globally-unique only);
+  `contains(` offers a bracketed collection-reference snippet and infers its enum
+  cases for the second argument; collection columns and Template parameters offer
+  `Set<Enum>`/`List<Enum>` types, including completion inside a partial generic;
   expression keywords at low priority. Direct Template indentation additionally offers
   `param` and its built-in/enum types; call-argument blocks offer the callee's declared
   names and use their types for value suggestions. After a completed string
   interpolation or its format colon, one focused snippet offers `[name:0N]` zero
   padding (default width 3); this is not a general format vocabulary.
   Template-node indentation offers `let`,
-  `If:`, a pairing `Else:`, built-in nodes, and lowercase-or-uppercase Template calls;
+  `If:`, a pairing `Else:`, `ForEach:`, built-in nodes, and lowercase-or-uppercase Template calls;
   call suggestions omit the compatibility-only names `If` and `Else`. Comments
   complete nothing.
 - **Ranking and ranges:** four sort tiers — context-primary, secondary (enum names,

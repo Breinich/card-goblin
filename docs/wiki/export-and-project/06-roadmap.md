@@ -13,7 +13,8 @@ change.
 
 **The editor and the language.** Code, live SVG preview, and a schema-driven
 spreadsheet, wired together with a ~300 ms live compile. Enums, sheets, templates,
-shapes, `Repeat`, the full expression engine, and per-card error isolation — the whole
+shapes, `Repeat`, `Set<Enum>`/`List<Enum>` data with `contains` and `ForEach`, the full
+expression engine, and per-card error isolation — the whole
 pipeline from script to rendered deck.
 
 **PDF export.** Page size, margins, spacing, cut lines, crop marks, and
@@ -45,8 +46,8 @@ moving between browsers, and keeping more than one project. See
 [Project files](03-project-files.md).
 
 **Template composition and parameters.** Templates can declare typed `param`
-inputs and call other Templates in source order, including inside `If`, `Else`, and
-`Repeat`. Arguments are explicit, so nested layouts stay reusable without hidden
+inputs and call other Templates in source order, including inside `If`, `Else`,
+`Repeat`, and `ForEach`. Arguments are explicit, so nested layouts stay reusable without hidden
 caller state. See [Templates & shapes](../goblin-script/03-templates-and-shapes.md).
 
 **Text wrapping.** The `TextBox` element: multi-line text that wraps in the

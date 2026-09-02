@@ -35,6 +35,12 @@ export type {
   VirtualColumnInfo,
 } from "./check";
 export { CSS_COLOR_NAMES } from "./css-colors";
+export { formatCollectionCell, parseCollectionCell } from "./collections";
+export type {
+  CollectionCellIssue,
+  CollectionCellResult,
+  CollectionKind,
+} from "./collections";
 export { DICIER_CODES, DICIER_CODE_CATEGORIES } from "./dicier-codes";
 export { generateModel } from "./generate";
 export type { EditedRows, GenerateResult, SheetRows } from "./generate";

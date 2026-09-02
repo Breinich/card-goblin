@@ -54,7 +54,9 @@ reference.
 Several newer forms are contextual, not reserved names: `let` is special only in
 `let name: value`, `param` only in `param name: Type` directly inside a Template,
 `virtual` only in `virtual column name: Type = expression` inside a Sheet, and
-capitalized `If:`/`Else:` only where a Template node can appear. `column let: Text`,
+capitalized `If:`/`Else:` and `ForEach:` only where a Template node can appear.
+`Set<Enum>`/`List<Enum>` are special only in type positions, and `contains(...)`
+only in expression position. `column let: Text`,
 `column param: Text`, `column virtual: Text`, `Template: If`, and `Front: If` are
 therefore still legal.
 

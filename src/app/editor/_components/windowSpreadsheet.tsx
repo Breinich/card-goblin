@@ -49,12 +49,14 @@ import {
   type SheetsState,
 } from "@/app/editor/_store/editorStore";
 import {
+  addCollectionItem,
   applyPasteOps,
   buildFlagIndex,
   cellEditReduce,
   cellFlagKey,
   cellValueOf,
   clampColumnWidth,
+  collectionTokensOf,
   columnTypeLabel,
   DEFAULT_COLUMN_WIDTH_PX,
   enumOptionsOf,
@@ -62,12 +64,15 @@ import {
   isPristineRow,
   MAX_COLUMN_WIDTH_PX,
   MIN_COLUMN_WIDTH_PX,
+  moveCollectionItem,
   parseClipboardBlock,
   pasteCommitsDirectly,
   pasteOps,
+  removeCollectionItem,
   resolveIndexEdit,
   type CellDraft,
   type CellEditAction,
+  type CollectionSchemaType,
   type PasteTarget,
 } from "@/app/editor/_components/gridModel";
 
@@ -428,17 +433,18 @@ function SheetGrid({
     e: ClipboardEvent<HTMLElement>,
     rowIndex: number,
     columnIndex: number,
-    enumCell: boolean,
+    directCell: boolean,
   ): void => {
     const block = parseClipboardBlock(e.clipboardData.getData("text/plain"));
     // Routing (gridModel.pasteCommitsDirectly, MINOR-1): a 1×1 payload on a
     // text cell stays native (drafts, commits on blur like typing); on an
-    // enum <select> — which has no draft — it must commit through the store
-    // or the paste is a silent no-op. Multi-cell blocks always commit.
-    if (!pasteCommitsDirectly(block, enumCell)) return;
+    // enum/collection controls — which have no text draft — paste through
+    // the store or the operation would be a silent no-op. Multi-cell blocks
+    // always commit.
+    if (!pasteCommitsDirectly(block, directCell)) return;
     e.preventDefault();
     applyPasteOps(
-      pasteOps(sheet.name, rowIndex, columnIndex, columnNames, state.rows.length, block),
+      pasteOps(sheet.name, rowIndex, columnIndex, sheet.columns, state.rows.length, block),
       actions,
     );
   };
@@ -529,6 +535,15 @@ function SheetGrid({
                         <EnumCell
                           value={value}
                           cases={column.type.cases}
+                          flagged={flag !== undefined}
+                          onCommit={(next) => actions.setCell(sheet.name, r, column.name, next)}
+                          onPasteBlock={(e) => handlePaste(e, r, c, true)}
+                        />
+                      ) : column.type.kind === "Set" || column.type.kind === "List" ? (
+                        <CollectionCell
+                          column={column.name}
+                          value={value}
+                          type={column.type}
                           flagged={flag !== undefined}
                           onCommit={(next) => actions.setCell(sheet.name, r, column.name, next)}
                           onPasteBlock={(e) => handlePaste(e, r, c, true)}
@@ -810,5 +825,124 @@ function EnumCell({ value, cases, flagged, onCommit, onPasteBlock }: EnumCellPro
         </option>
       ))}
     </select>
+  );
+}
+
+interface CollectionCellProps {
+  column: string;
+  value: string;
+  type: CollectionSchemaType;
+  flagged: boolean;
+  onCommit(value: string): void;
+  onPasteBlock(e: ClipboardEvent<HTMLElement>): void;
+}
+
+/** Set/List cells stay backed by the shared textual codec while exposing
+ * explicit, keyboard-reachable chip operations. Invalid raw tokens are not
+ * repaired on render: each remains visible as a red chip until edited. */
+function CollectionCell({
+  column,
+  value,
+  type,
+  flagged,
+  onCommit,
+  onPasteBlock,
+}: CollectionCellProps): ReactElement {
+  const tokens = collectionTokensOf(value, type);
+  const selected = new Set(tokens.map((token) => token.value));
+  const commit = (next: string): void => {
+    if (next !== value) onCommit(next);
+  };
+
+  return (
+    <div
+      role="group"
+      className={`flex min-h-7 min-w-0 flex-wrap items-center gap-1 px-1 py-0.5 ${
+        flagged ? "text-red-200" : ""
+      }`}
+      onPaste={onPasteBlock}
+      aria-label={`${type.kind} of ${type.enumName} cell ${column}`}
+    >
+      {tokens.map((token, index) => {
+        const invalid = token.issue !== undefined;
+        const label = token.value === "" ? "(empty)" : token.value;
+        return (
+          <span
+            key={`${index}:${token.value}`}
+            className={`inline-flex min-w-0 items-center rounded border px-1 py-0.5 ${
+              invalid
+                ? "border-red-500 bg-red-950 text-red-100"
+                : "border-gray-600 bg-gray-800 text-gray-200"
+            }`}
+            title={invalid ? `Invalid ${token.issue} collection item` : undefined}
+          >
+            <span className="max-w-32 truncate">{label}</span>
+            {type.kind === "List" && (
+              <>
+                <button
+                  type="button"
+                  aria-label={
+                    index === 0
+                      ? `Move ${label} left from position 1 in ${column}`
+                      : `Move ${label} from position ${index + 1} to ${index} in ${column}`
+                  }
+                  title="move left"
+                  disabled={index === 0}
+                  onClick={() => commit(moveCollectionItem(value, type, index, -1))}
+                  className="ml-1 rounded px-0.5 text-gray-400 hover:text-white disabled:opacity-25"
+                >
+                  ←
+                </button>
+                <button
+                  type="button"
+                  aria-label={
+                    index === tokens.length - 1
+                      ? `Move ${label} right from position ${index + 1} in ${column}`
+                      : `Move ${label} from position ${index + 1} to ${index + 2} in ${column}`
+                  }
+                  title="move right"
+                  disabled={index === tokens.length - 1}
+                  onClick={() => commit(moveCollectionItem(value, type, index, 1))}
+                  className="rounded px-0.5 text-gray-400 hover:text-white disabled:opacity-25"
+                >
+                  →
+                </button>
+              </>
+            )}
+            <button
+              type="button"
+              aria-label={
+                type.kind === "List"
+                  ? `Remove ${label} at position ${index + 1} from ${column}`
+                  : `Remove ${label} from ${column}`
+              }
+              title="remove"
+              onClick={() => commit(removeCollectionItem(value, type, index))}
+              className="ml-1 rounded px-0.5 text-gray-400 hover:text-red-300"
+            >
+              ×
+            </button>
+          </span>
+        );
+      })}
+      <select
+        value=""
+        aria-label={`Add item to ${column}`}
+        title={`Add ${type.enumName}`}
+        onChange={(event) => commit(addCollectionItem(value, type, event.currentTarget.value))}
+        className="min-w-16 rounded border border-dashed border-gray-600 bg-gray-900 px-1 py-0.5 text-gray-400 outline-none focus:ring-1 focus:ring-sky-600"
+      >
+        <option value="">+ add</option>
+        {type.cases.map((caseName) => (
+          <option
+            key={caseName}
+            value={caseName}
+            disabled={type.kind === "Set" && selected.has(caseName)}
+          >
+            {caseName}
+          </option>
+        ))}
+      </select>
+    </div>
   );
 }

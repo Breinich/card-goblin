@@ -35,9 +35,11 @@ import type {
   EnumDecl,
   Expr,
   FaceNode,
+  ForEachNode,
   IdentifierExpr,
   IfNode,
   LetNode,
+  NameRef,
   NumberLit,
   Program,
   PropertyNode,
@@ -82,6 +84,8 @@ export type ValueType =
   | { kind: "Bool" }
   | { kind: "Color" }
   | { kind: "Enum"; enumName: string }
+  | { kind: "Set"; enumName: string }
+  | { kind: "List"; enumName: string }
   | { kind: "Unknown" };
 
 const NUMBER: ValueType = { kind: "Number" };
@@ -90,10 +94,16 @@ const BOOL: ValueType = { kind: "Bool" };
 const COLOR: ValueType = { kind: "Color" };
 const UNKNOWN: ValueType = { kind: "Unknown" };
 const enumType = (enumName: string): ValueType => ({ kind: "Enum", enumName });
+const collectionType = (kind: "Set" | "List", enumName: string): ValueType => ({
+  kind,
+  enumName,
+});
 
 /** Human-readable type name for messages. */
 export function typeName(t: ValueType): string {
-  return t.kind === "Enum" ? `enum ${t.enumName}` : t.kind;
+  if (t.kind === "Enum") return `enum ${t.enumName}`;
+  if (t.kind === "Set" || t.kind === "List") return `${t.kind}<${t.enumName}>`;
+  return t.kind;
 }
 
 /** What a Ref / bare Identifier / Qualified name / string-interpolation part
@@ -102,6 +112,7 @@ export type Resolution =
   | { kind: "column"; sheet: string; column: string; type: ValueType }
   | { kind: "loopVar"; enumName: string | null }
   | { kind: "repeatVar" }
+  | { kind: "forEachVar"; type: ValueType }
   | { kind: "let"; binding: LetNode; scope: "global" | "local"; type: ValueType }
   | { kind: "param"; parameter: TemplateParamDecl; type: ValueType }
   | { kind: "enumCase"; enumName: string; caseName: string }
@@ -321,7 +332,8 @@ type Expected =
   | { kind: "Text" }
   | { kind: "Bool" }
   | { kind: "Color" }
-  | { kind: "Enum"; enumDecl: EnumDecl };
+  | { kind: "Enum"; enumDecl: EnumDecl }
+  | { kind: "Set" | "List"; enumDecl: EnumDecl };
 
 const EXP_NONE: Expected = { kind: "None" };
 const EXP_NUMBER: Expected = { kind: "Number" };
@@ -418,6 +430,10 @@ interface LetScope {
   lets: ReadonlyMap<string, LetNode>;
   /** Repeat introduced for this child block, if any. */
   repeat: { name: string; range: Range } | null;
+  /** ForEach contributes two typed names in one lexical scope. */
+  forEach: {
+    variables: ReadonlyMap<string, { range: Range; type: ValueType }>;
+  } | null;
 }
 
 interface LetState {
@@ -661,7 +677,7 @@ class Checker {
     for (const child of children) {
       if (child.kind === "Let" && !this.collided.has(child) && !this.usedLets.has(child)) {
         this.warn("W002", `Binding '${child.name.name}' is never used`, child.name.range);
-      } else if (child.kind === "Repeat") {
+      } else if (child.kind === "Repeat" || child.kind === "ForEach") {
         this.warnUnusedLets(child.children);
       } else if (child.kind === "IfBlock") {
         this.warnUnusedLets(child.thenChildren);
@@ -814,6 +830,31 @@ class Checker {
   }
 
   private resolveColumnType(col: ColumnDecl | VirtualColumnDecl): ValueType {
+    if ("kind" in col.columnType && col.columnType.kind === "CollectionType") {
+      const ref = col.columnType;
+      if (col.kind === "VirtualColumnDecl") {
+        this.error(
+          "E002",
+          `Virtual columns cannot use collection type ${ref.name}<${ref.elementType.name}>`,
+          ref.range,
+        );
+        return UNKNOWN;
+      }
+      const enumDecl = this.enums.get(ref.elementType.name);
+      if (enumDecl) {
+        this.markEnumUsed(enumDecl);
+        return collectionType(ref.name, enumDecl.name.name);
+      }
+      const other = this.globalKinds.get(ref.elementType.name);
+      this.error(
+        "E002",
+        other !== undefined
+          ? `'${ref.elementType.name}' is ${other}, not an Enum — ${ref.name} elements must be enum values`
+          : `Unknown enum '${ref.elementType.name}' in ${ref.name}<...>`,
+        ref.elementType.range,
+      );
+      return UNKNOWN;
+    }
     const name = col.columnType.name;
     if (name === "Text") return TEXT;
     if (name === "Number") return NUMBER;
@@ -834,6 +875,23 @@ class Checker {
   }
 
   private resolveParameterType(param: TemplateParamDecl): ValueType {
+    if ("kind" in param.paramType && param.paramType.kind === "CollectionType") {
+      const ref = param.paramType;
+      const enumDecl = this.enums.get(ref.elementType.name);
+      if (enumDecl) {
+        this.markEnumUsed(enumDecl);
+        return collectionType(ref.name, enumDecl.name.name);
+      }
+      const other = this.globalKinds.get(ref.elementType.name);
+      this.error(
+        "E002",
+        other !== undefined
+          ? `'${ref.elementType.name}' is ${other}, not an Enum — ${ref.name} elements must be enum values`
+          : `Unknown enum '${ref.elementType.name}' in ${ref.name}<...>`,
+        ref.elementType.range,
+      );
+      return UNKNOWN;
+    }
     const name = param.paramType.name;
     if (name === "Text") return TEXT;
     if (name === "Number") return NUMBER;
@@ -1374,6 +1432,9 @@ class Checker {
         case "Repeat":
           this.checkRepeat(node, ctx);
           return;
+        case "ForEach":
+          this.checkForEach(node, ctx);
+          return;
         case "IfBlock":
           this.checkIfBlock(node, ctx);
           return;
@@ -1397,6 +1458,7 @@ class Checker {
     ctx: Ctx,
     repeat: { name: string; range: Range } | null,
     templateRoot = false,
+    forEach: LetScope["forEach"] = null,
   ): void {
     const lets = new Map<string, LetNode>();
     for (const child of children) {
@@ -1419,7 +1481,7 @@ class Checker {
       }
     }
 
-    const scope: LetScope = { lets, repeat };
+    const scope: LetScope = { lets, repeat, forEach };
     ctx.scopes.push(scope);
     if (repeat) ctx.repeats.push(repeat);
     for (const binding of lets.values()) this.checkLetShadow(binding, ctx);
@@ -1464,7 +1526,7 @@ class Checker {
             this.markTemplateUsed(target);
             if (!seen.has(target)) stack.push(target);
           }
-        } else if (node.kind === "Repeat") {
+        } else if (node.kind === "Repeat" || node.kind === "ForEach") {
           for (let i = node.children.length - 1; i >= 0; i--) nodes.push(node.children[i]);
         } else if (node.kind === "IfBlock") {
           if (node.elseBranch) {
@@ -1596,10 +1658,12 @@ class Checker {
     let shadowed: string | null = null;
     const current = ctx.scopes[ctx.scopes.length - 1];
     if (current?.repeat?.name === name) shadowed = "an enclosing Repeat variable";
+    if (current?.forEach?.variables.has(name)) shadowed = "an enclosing ForEach variable";
     for (let i = ctx.scopes.length - 2; i >= 0 && !shadowed; i--) {
       const scope = ctx.scopes[i];
       if (scope.lets.has(name)) shadowed = "an outer binding";
       else if (scope.repeat?.name === name) shadowed = "an enclosing Repeat variable";
+      else if (scope.forEach?.variables.has(name)) shadowed = "an enclosing ForEach variable";
     }
     if (!shadowed && ctx.params.has(name)) shadowed = "a Template parameter";
     if (!shadowed && ctx.loops.has(name)) shadowed = "a Card loop variable";
@@ -1623,6 +1687,7 @@ class Checker {
         const scope = ctx.scopes[i];
         if (scope.lets.has(name)) shadowed = "an enclosing binding";
         else if (scope.repeat?.name === name) shadowed = "an enclosing Repeat variable";
+        else if (scope.forEach?.variables.has(name)) shadowed = "an enclosing ForEach variable";
       }
       if (!shadowed && ctx.params.has(name)) shadowed = "a Template parameter";
       if (!shadowed && ctx.loops.has(name)) shadowed = "a loop variable";
@@ -1642,6 +1707,56 @@ class Checker {
       // Parser-null variable (E001 covered): children still get checked.
       this.checkBlock(node.children, ctx, null);
     }
+  }
+
+  private checkForEach(node: ForEachNode, ctx: Ctx): void {
+    const type = this.checkValue(node.collection, EXP_NONE, ctx, false);
+    let itemType: ValueType = UNKNOWN;
+    if (type.kind === "Set" || type.kind === "List") {
+      itemType = enumType(type.enumName);
+    } else if (type.kind !== "Unknown") {
+      this.error(
+        "E003",
+        `ForEach expects Set<Enum> or List<Enum>, got ${typeName(type)}`,
+        node.collection.range,
+      );
+    }
+    const variables = new Map<string, { range: Range; type: ValueType }>();
+    if (node.itemVariable) {
+      variables.set(node.itemVariable.name, { range: node.itemVariable.range, type: itemType });
+      this.checkIterationShadow("ForEach item", node.itemVariable, ctx);
+    }
+    if (node.indexVariable) {
+      if (variables.has(node.indexVariable.name)) {
+        this.error(
+          "E005",
+          `ForEach item and index variables cannot both be '${node.indexVariable.name}'`,
+          node.indexVariable.range,
+        );
+      } else {
+        variables.set(node.indexVariable.name, { range: node.indexVariable.range, type: NUMBER });
+      }
+      this.checkIterationShadow("ForEach index", node.indexVariable, ctx);
+    }
+    this.checkBlock(node.children, ctx, null, false, { variables });
+  }
+
+  private checkIterationShadow(label: string, variable: NameRef, ctx: Ctx): void {
+    const name = variable.name;
+    let shadowed: string | null = null;
+    for (let i = ctx.scopes.length - 1; i >= 0 && !shadowed; i--) {
+      const scope = ctx.scopes[i];
+      if (scope.lets.has(name)) shadowed = "an enclosing binding";
+      else if (scope.repeat?.name === name) shadowed = "an enclosing Repeat variable";
+      else if (scope.forEach?.variables.has(name)) shadowed = "an enclosing ForEach variable";
+    }
+    if (!shadowed && ctx.params.has(name)) shadowed = "a Template parameter";
+    if (!shadowed && ctx.loops.has(name)) shadowed = "a loop variable";
+    if (!shadowed && ctx.sheet?.columns.has(name)) {
+      shadowed = `column '${name}' of sheet '${ctx.sheet.decl.name.name}'`;
+    }
+    if (!shadowed && this.globals.has(name)) shadowed = "a global binding";
+    if (shadowed) this.warn("W001", `${label} variable '${name}' shadows ${shadowed}`, variable.range);
   }
 
   private checkTemplateCall(node: TemplateCallNode, ctx: Ctx): void {
@@ -1722,6 +1837,10 @@ class Checker {
     if (type.kind === "Enum") {
       const enumDecl = this.enums.get(type.enumName);
       return enumDecl ? { kind: "Enum", enumDecl } : EXP_NONE;
+    }
+    if (type.kind === "Set" || type.kind === "List") {
+      const enumDecl = this.enums.get(type.enumName);
+      return enumDecl ? { kind: type.kind, enumDecl } : EXP_NONE;
     }
     return EXP_NONE;
   }
@@ -2198,6 +2317,16 @@ class Checker {
           );
         }
         return;
+      case "Set":
+      case "List":
+        if (t.kind !== expected.kind || t.enumName !== expected.enumDecl.name.name) {
+          this.error(
+            "E003",
+            `Type mismatch: expected ${expected.kind}<${expected.enumDecl.name.name}>, got ${typeName(t)}`,
+            range,
+          );
+        }
+        return;
     }
   }
 
@@ -2267,7 +2396,12 @@ class Checker {
             }
             continue;
           }
-          if (t.kind === "Bool" || t.kind === "Color") {
+          if (
+            t.kind === "Bool" ||
+            t.kind === "Color" ||
+            t.kind === "Set" ||
+            t.kind === "List"
+          ) {
             this.error(
               "E003",
               `[${part.name}] is ${typeName(t)} — it cannot be interpolated into Text`,
@@ -2283,6 +2417,8 @@ class Checker {
         return this.resolveBare(expr, expected, ctx, geometryOk);
       case "Qualified":
         return this.resolveQualified(expr, ctx);
+      case "Call":
+        return this.typeOfCall(expr, ctx, geometryOk);
       case "Unary": {
         const wanted = expr.op === "not" ? EXP_BOOL : EXP_NUMBER;
         const ok = expr.op === "not" ? "Bool" : "Number";
@@ -2382,7 +2518,12 @@ class Checker {
           );
           return UNKNOWN;
         }
-        if (firstT.kind === "Bool" || firstT.kind === "Color") {
+        if (
+          firstT.kind === "Bool" ||
+          firstT.kind === "Color" ||
+          firstT.kind === "Set" ||
+          firstT.kind === "List"
+        ) {
           this.error(
             "E003",
             `${typeName(firstT)} values cannot be compared with '${op}'`,
@@ -2401,6 +2542,56 @@ class Checker {
         // + - * / % — arithmetic needs Numbers (§3.5).
         return this.checkOperands(expr, EXP_NUMBER, "Number", ctx, geometryOk) ? NUMBER : UNKNOWN;
     }
+  }
+
+  private typeOfCall(
+    expr: Extract<Expr, { kind: "Call" }>,
+    ctx: Ctx,
+    geometryOk: boolean,
+  ): ValueType {
+    if (expr.callee.name !== "contains") {
+      for (const arg of expr.arguments) this.typeOf(arg, EXP_NONE, ctx, geometryOk);
+      this.error("E002", `Unknown function '${expr.callee.name}' — only contains(...) is available`, expr.callee.range);
+      return UNKNOWN;
+    }
+    if (expr.arguments.length !== 2) {
+      for (const arg of expr.arguments) this.typeOf(arg, EXP_NONE, ctx, geometryOk);
+      this.error(
+        "E003",
+        `contains(...) expects 2 arguments, got ${expr.arguments.length}`,
+        expr.range,
+      );
+      return UNKNOWN;
+    }
+    const collection = this.typeOf(expr.arguments[0], EXP_NONE, ctx, geometryOk);
+    if (collection.kind !== "Set" && collection.kind !== "List") {
+      this.typeOf(expr.arguments[1], EXP_NONE, ctx, geometryOk);
+      if (collection.kind !== "Unknown") {
+        this.error(
+          "E003",
+          `contains(...) expects a Set<Enum> or List<Enum> first argument, got ${typeName(collection)}`,
+          expr.arguments[0].range,
+        );
+      }
+      return UNKNOWN;
+    }
+    const enumDecl = this.enums.get(collection.enumName);
+    const member = this.typeOf(
+      expr.arguments[1],
+      enumDecl ? { kind: "Enum", enumDecl } : EXP_NONE,
+      ctx,
+      geometryOk,
+    );
+    if (member.kind === "Unknown") return UNKNOWN;
+    if (member.kind !== "Enum" || member.enumName !== collection.enumName) {
+      this.error(
+        "E003",
+        `contains(${typeName(collection)}, ...) requires enum ${collection.enumName}, got ${typeName(member)}`,
+        expr.arguments[1].range,
+      );
+      return UNKNOWN;
+    }
+    return BOOL;
   }
 
   /** Type both operands against one required primitive type. Only the FIRST
@@ -2434,6 +2625,10 @@ class Checker {
       return null;
     }
     if (t.kind === "Number") return EXP_NUMBER;
+    if (t.kind === "Set" || t.kind === "List") {
+      const enumDecl = this.enums.get(t.enumName);
+      return enumDecl ? { kind: t.kind, enumDecl } : null;
+    }
     return null;
   }
 
@@ -2455,6 +2650,11 @@ class Checker {
         if (scope.repeat?.name === name) {
           this.recordResolution(ctx, node, { kind: "repeatVar" });
           return NUMBER;
+        }
+        const forEach = scope.forEach?.variables.get(name);
+        if (forEach) {
+          this.recordResolution(ctx, node, { kind: "forEachVar", type: forEach.type });
+          return forEach.type;
         }
       }
       const param = ctx.params.get(name);
@@ -2752,7 +2952,13 @@ function kindWord(kind: string): string {
 
 function sameType(a: ValueType, b: ValueType): boolean {
   if (a.kind !== b.kind) return false;
-  if (a.kind === "Enum" && b.kind === "Enum") return a.enumName === b.enumName;
+  if (
+    (a.kind === "Enum" && b.kind === "Enum") ||
+    (a.kind === "Set" && b.kind === "Set") ||
+    (a.kind === "List" && b.kind === "List")
+  ) {
+    return a.enumName === b.enumName;
+  }
   return true;
 }
 

@@ -51,6 +51,7 @@ export type Op =
   | "="
   | "("
   | ")"
+  | ","
   | "."
   | "=="
   | "!="
@@ -172,7 +173,10 @@ export function lex(source: string): LexResult {
       }
     }
 
-    tokens.push(...lineTokens);
+    // Avoid spreading a user-sized line into function arguments. Engines cap
+    // argument counts, so one very long (but otherwise lexable) physical line
+    // could otherwise throw a RangeError and violate the never-throw contract.
+    for (const token of lineTokens) tokens.push(token);
     tokens.push({
       kind: "newline",
       range: range(li, line.length, line.length),
@@ -276,7 +280,7 @@ function lexLineContent(
       i += 2;
       continue;
     }
-    if ("()+-*/%<>:.".includes(c)) {
+    if ("(),+-*/%<>:.".includes(c)) {
       out.push({ kind: "op", op: c as Op, range: range(i, i + 1) });
       i++;
       continue;
@@ -287,7 +291,7 @@ function lexLineContent(
       // everywhere else so equality mistakes still point users to `==`.
       const virtualPrefix = line.slice(start, i);
       if (
-        /^virtual\s+column\s+[A-Za-z][A-Za-z0-9_]*\s*:\s*[A-Za-z][A-Za-z0-9_]*\s*$/.test(
+        /^virtual\s+column\s+[A-Za-z][A-Za-z0-9_]*\s*:\s*[A-Za-z][A-Za-z0-9_]*(?:\s*<\s*[A-Za-z][A-Za-z0-9_]*\s*>)?\s*$/.test(
           virtualPrefix,
         )
       ) {

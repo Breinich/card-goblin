@@ -90,6 +90,30 @@ describe("seed (§3.9)", () => {
     expect(s.sheets.S).toEqual({ rows: [], editedRows: [] });
   });
 
+  it("collection columns preserve their kind, enum identity, and declaration-ordered cases", () => {
+    const store = createEditorStore({
+      code:
+        "Enum: Element\n  case Fire\n  case Water\n" +
+        "Sheet: S\n  column tags: Set<Element>\n  column cost: List<Element>\n",
+      sheets: {},
+    });
+    expect(store.getState().lastGoodSchema).toEqual([
+      {
+        name: "S",
+        columns: [
+          {
+            name: "tags",
+            type: { kind: "Set", enumName: "Element", cases: ["Fire", "Water"] },
+          },
+          {
+            name: "cost",
+            type: { kind: "List", enumName: "Element", cases: ["Fire", "Water"] },
+          },
+        ],
+      },
+    ]);
+  });
+
   it("normalizes a misaligned seed: editedRows padded/truncated to rows.length", () => {
     const store = createEditorStore({
       code: "Sheet: S\n  column a: Text\n",
@@ -114,6 +138,17 @@ describe("seed (§3.9)", () => {
     a.getState().setCell("Monsters", 0, "name", "Wyrm");
     expect(a.getState().sheets.Monsters.rows[0].name).toBe("Wyrm");
     expect(b.getState().sheets.Monsters.rows[0].name).toBe("Dragon");
+  });
+
+  it("setCell is identity-stable for a real no-op and does not spend a pristine flag", () => {
+    const store = createEditorStore({
+      code: "Sheet: S\n  column tags: Text\n",
+      sheets: { S: { rows: [{}], editedRows: [false] } },
+    });
+    const before = store.getState();
+    before.setCell("S", 0, "tags", "");
+    expect(store.getState()).toBe(before);
+    expect(store.getState().sheets.S.editedRows).toEqual([false]);
   });
 });
 
@@ -655,6 +690,14 @@ const enumCol = (name: string, enumName: string): SchemaColumn => ({
   name,
   type: { kind: "Enum", enumName, cases: ["A", "B"] },
 });
+const collectionCol = (
+  name: string,
+  kind: "Set" | "List",
+  enumName: string,
+): SchemaColumn => ({
+  name,
+  type: { kind, enumName, cases: ["A", "B"] },
+});
 const sheetOf = (name: string, ...columns: SchemaColumn[]): SheetSchema => ({ name, columns });
 const shRows = (rows: Record<string, string>[]): SheetsState => ({
   Sh: { rows, editedRows: rows.map(() => true) },
@@ -802,6 +845,45 @@ describe("reconcileSheets (◆26 — pure)", () => {
       [sheetOf("Sh", enumCol("t", "Rank"))],
     );
     expect(notMigrated).toBe(sheets);
+  });
+
+  it("collection columns rename only within the same collection kind and enum", () => {
+    const sheets = shRows([{ tags: "A, B" }]);
+    const migrated = reconcileSheets(
+      sheets,
+      [sheetOf("Sh", collectionCol("tags", "Set", "Kind"))],
+      [sheetOf("Sh", collectionCol("labels", "Set", "Kind"))],
+    );
+    expect(migrated.Sh.rows).toEqual([{ labels: "A, B" }]);
+
+    for (const replacement of [
+      collectionCol("labels", "List", "Kind"),
+      collectionCol("labels", "Set", "Other"),
+      enumCol("labels", "Kind"),
+    ]) {
+      expect(
+        reconcileSheets(
+          sheets,
+          [sheetOf("Sh", collectionCol("tags", "Set", "Kind"))],
+          [sheetOf("Sh", replacement)],
+        ),
+      ).toBe(sheets);
+    }
+  });
+
+  it("collection case-list edits update schema identity without changing type identity", () => {
+    const oldColumn: SchemaColumn = {
+      name: "tags",
+      type: { kind: "Set", enumName: "Kind", cases: ["A", "B"] },
+    };
+    const renamed: SchemaColumn = {
+      name: "labels",
+      type: { kind: "Set", enumName: "Kind", cases: ["B", "A", "C"] },
+    };
+    const sheets = shRows([{ tags: "A" }]);
+    expect(
+      reconcileSheets(sheets, [sheetOf("Sh", oldColumn)], [sheetOf("Sh", renamed)]).Sh.rows,
+    ).toEqual([{ labels: "A" }]);
   });
 
   it("a new schema sheet materializes empty; a removed sheet's data is kept", () => {

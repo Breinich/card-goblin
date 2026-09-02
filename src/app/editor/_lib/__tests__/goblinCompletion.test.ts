@@ -736,14 +736,14 @@ describe("property keys", () => {
   it("Template bodies offer params; nested blocks offer nodes/lets but not params", () => {
     const direct = at(src("Template: T", "  ¦"));
     expect(labels(direct)).toEqual([
-      "Rectangle", "Text", "TextBox", "Icon", "Image", "Qr", "Repeat", "If", "param",
+      "Rectangle", "Text", "TextBox", "Icon", "Image", "Qr", "Repeat", "ForEach", "If", "param",
       "let", "MonsterFront", "ExtraFront",
     ]);
     expect(byLabel(direct, "param").snippet).toBe(true);
 
     const nested = at(src("Template: T", "  Repeat: 3 as i", "    ¦"));
     expect(labels(nested)).toEqual([
-      "Rectangle", "Text", "TextBox", "Icon", "Image", "Qr", "Repeat", "If", "let",
+      "Rectangle", "Text", "TextBox", "Icon", "Image", "Qr", "Repeat", "ForEach", "If", "let",
       "MonsterFront", "ExtraFront",
     ]);
     expect(byLabel(nested, "Rectangle").insertText).toBe("Rectangle: ");
@@ -753,14 +753,16 @@ describe("property keys", () => {
   });
 
   it("Sheet body offers physical/virtual columns, Enum body offers `case`", () => {
-    expect(byLabel(at(src("Sheet: S", "  ¦")), "column").insertText).toBe("column ");
+    const column = byLabel(at(src("Sheet: S", "  ¦")), "column");
+    expect(column.insertText).toBe("column ");
+    expect(column.detail).toContain("Set<Enum> | List<Enum>");
     expect(byLabel(at(src("Sheet: S", "  ¦")), "virtual column").snippet).toBe(true);
     expect(byLabel(at(src("Enum: E", "  ¦")), "case").insertText).toBe("case ");
   });
 
   it("keeps let contextual: `column let:` is still a column declaration", () => {
     expect(labels(at(src("Sheet: S", "  column let: ¦")))).toEqual([
-      "Text", "Number", "Suit", "Rarity",
+      "Text", "Number", "Suit", "Set<Suit>", "List<Suit>", "Rarity", "Set<Rarity>", "List<Rarity>",
     ]);
   });
 
@@ -853,7 +855,7 @@ describe("value positions", () => {
 
   it("completes parameter types and explicit call argument names", () => {
     expect(labels(at(src("Template: Face", "  param tint: ¦")))).toEqual([
-      "Text", "Number", "Bool", "Color", "Suit", "Rarity",
+      "Text", "Number", "Bool", "Color", "Suit", "Set<Suit>", "List<Suit>", "Rarity", "Set<Rarity>", "List<Rarity>",
     ]);
 
     const doc = src(
@@ -1148,7 +1150,7 @@ describe("value positions", () => {
 
   it("column type position offers Text/Number and enum names", () => {
     expect(labels(at(src("Sheet: S", "  column power: ¦")))).toEqual([
-      "Text", "Number", "Suit", "Rarity",
+      "Text", "Number", "Suit", "Set<Suit>", "List<Suit>", "Rarity", "Set<Rarity>", "List<Rarity>",
     ]);
   });
 
@@ -1517,5 +1519,275 @@ describe("compiler pins (E008 probes)", () => {
       true,
     );
     expect(labels(at(src("Template: T", "  Rectangle:", "    ¦")))).not.toContain("bogus");
+  });
+});
+
+describe("Set/List and ForEach completions (◆55)", () => {
+  const COLLECTION_SOURCE = src(
+    "Enum: Tag",
+    "  case Armor",
+    "  case Fire",
+    "Enum: Mana",
+    "  case Blue",
+    "  case Red",
+    "Sheet: Cards",
+    "  column tags: Set<Tag>",
+    "  column cost: List<Mana>",
+    "Template: Face",
+    "  ForEach: [tags] as tag, i",
+    "    Text:",
+    "      x: [i]",
+    "      y: 0",
+    "      size: 1",
+    "      text: [tag]",
+    "Card: Deck",
+    "  sheet: Cards",
+    "  size: poker",
+    "  x_units: 20",
+    "  Front: Face",
+  );
+  const collectionSnapshot = buildCompletionSnapshot(
+    compileSource(COLLECTION_SOURCE).bindings,
+    null,
+  );
+
+  it("carries collection kind and element enum in the snapshot", () => {
+    expect(collectionSnapshot.sheets[0].columns).toEqual([
+      {
+        name: "tags",
+        type: "Set<Tag>",
+        enumName: "Tag",
+        collectionKind: "Set",
+      },
+      {
+        name: "cost",
+        type: "List<Mana>",
+        enumName: "Mana",
+        collectionKind: "List",
+      },
+    ]);
+  });
+
+  it("offers collection column types and narrows the generic element to enums", () => {
+    const offered = labels(at(src("Sheet: S", "  column tags: ¦"), collectionSnapshot));
+    expect(offered).toContain("Set<Tag>");
+    expect(offered).toContain("List<Mana>");
+    expect(labels(at(src("Sheet: S", "  column tags: Set<¦"), collectionSnapshot))).toEqual([
+      "Tag",
+      "Mana",
+    ]);
+  });
+
+  it("balances partial generic completions without duplicating an existing close bracket", () => {
+    const openColumn = at(src("Sheet: S", "  column tags: Set<¦"), collectionSnapshot);
+    expect(byLabel(openColumn, "Tag").insertText).toBe("Tag>");
+
+    const closedColumn = at(src("Sheet: S", "  column tags: Set<¦>"), collectionSnapshot);
+    expect(byLabel(closedColumn, "Tag").insertText).toBe("Tag");
+
+    const partialParam = at(
+      src("Template: T", "  param cost: List<Ma¦"),
+      collectionSnapshot,
+    );
+    expect(byLabel(partialParam, "Mana").insertText).toBe("Mana>");
+    const clean = src("Template: T", "  param cost: List<Ma");
+    expect(clean.slice(partialParam.replaceStart, partialParam.replaceEnd)).toBe("Ma");
+
+    const closedParam = at(
+      src("Template: T", "  param cost: List<Ma¦>"),
+      collectionSnapshot,
+    );
+    expect(byLabel(closedParam, "Mana").insertText).toBe("Mana");
+
+    const spacedOpen = at(
+      src("Sheet: S", "  column tags: Set < ¦"),
+      collectionSnapshot,
+    );
+    expect(labels(spacedOpen)).toEqual(["Tag", "Mana"]);
+    expect(byLabel(spacedOpen, "Tag").insertText).toBe("Tag>");
+
+    const spacedClosed = at(
+      src("Template: T", "  param cost: List < ¦ >"),
+      collectionSnapshot,
+    );
+    expect(byLabel(spacedClosed, "Mana").insertText).toBe("Mana");
+  });
+
+  it("offers ForEach as a node and both lexical bindings inside its body", () => {
+    expect(labels(at(src("Template: T", "  ¦"), collectionSnapshot))).toContain("ForEach");
+    const refs = at(
+      src("Template: T", "  ForEach: [tags] as tag, i", "    Text:", "      text: [¦]"),
+      collectionSnapshot,
+    );
+    expect(labels(refs)).toEqual(expect.arrayContaining(["tag", "i", "tags", "cost"]));
+    expect(byLabel(refs, "tag").detail).toBe("ForEach item — enum Tag");
+    expect(byLabel(refs, "i").detail).toBe("ForEach index (0-based Number)");
+  });
+
+  it("infers contains' case suggestions from a collection column", () => {
+    const offered = labels(
+      at(
+        src("Template: T", "  If: contains([tags], ¦)", "    Rectangle:"),
+        collectionSnapshot,
+      ),
+    );
+    expect(offered.slice(0, 2)).toEqual(["Armor", "Fire"]);
+  });
+
+  it("retains contains inference across continued calls and forwarded collection refs", () => {
+    const completion = at(
+      src(
+        "Template: T",
+        "  param input_tags: Set<Tag>",
+        "  let forwarded: [input_tags]",
+        "  let result:",
+        "    contains(",
+        "      [forwarded],",
+        "      ¦",
+        "    )",
+      ),
+      collectionSnapshot,
+    );
+    expect(byLabel(completion, "Armor").group).toBe(0);
+    expect(byLabel(completion, "Armor").detail).toBe("Tag case accepted by contains");
+  });
+
+  it("does not infer element cases for illegal collection equality", () => {
+    const ambiguous: CompletionSnapshot = {
+      sheets: [
+        {
+          name: "Cards",
+          columns: [
+            {
+              name: "tags",
+              type: "Set<Tag>",
+              enumName: "Tag",
+              collectionKind: "Set",
+            },
+          ],
+        },
+      ],
+      enums: [
+        { name: "Tag", cases: ["Shared"] },
+        { name: "Other", cases: ["Shared"] },
+      ],
+      templates: [],
+    };
+    const completion = at(src("Template: T", "  If: [tags] == ¦"), ambiguous);
+    expect(labels(completion)).not.toContain("Shared");
+  });
+
+  it("infers ForEach item cases from collection parameters", () => {
+    const doc = src(
+      "Enum: Tag",
+      "  case Armor",
+      "  case Fire",
+      "Template: T",
+      "  param input_tags: Set<Tag>",
+      "  ForEach: [input_tags] as tag, i",
+      "    If: [tag] == ¦",
+    );
+    const offered = at(doc, collectionSnapshot);
+    expect(labels(offered).slice(0, 2)).toEqual(["Armor", "Fire"]);
+    expect(byLabel(offered, "Armor").detail).toBe("Tag case");
+  });
+
+  it("infers ForEach item cases through forwarded lets and same-typed if branches", () => {
+    for (const forwarding of [
+      ["  let forwarded: [input_tags]", "  ForEach: [forwarded] as tag, i"],
+      [
+        "  let forwarded: if true then [input_tags] else [fallback_tags]",
+        "  ForEach: [forwarded] as tag, i",
+      ],
+      [
+        "  let forwarded:",
+        "    if true then [input_tags] else [fallback_tags]",
+        "  ForEach: [forwarded] as tag, i",
+      ],
+      [
+        "  ForEach: if true then [input_tags] else [fallback_tags] as tag, i",
+      ],
+    ]) {
+      const doc = src(
+        "Template: T",
+        "  param input_tags: Set<Tag>",
+        "  param fallback_tags: Set<Tag>",
+        ...forwarding,
+        "    If: [tag] == ¦",
+      );
+      expect(labels(at(doc, collectionSnapshot)).slice(0, 2), forwarding.join("\n")).toEqual([
+        "Armor",
+        "Fire",
+      ]);
+    }
+  });
+
+  it("infers through spaced collection parameter types and forwarded if lets", () => {
+    const doc = src(
+      "Enum: Tag",
+      "  case Armor",
+      "  case Fire",
+      "Template: T",
+      "  param input_tags: Set < Tag >",
+      "  param fallback_tags: Set < Tag >",
+      "  let forwarded: if 1 == 1 then [input_tags] else [fallback_tags]",
+      "  ForEach: [forwarded] as tag, i",
+      "    If: [tag] == ¦",
+    );
+    const completion = at(doc, collectionSnapshot);
+    expect(labels(completion).slice(0, 2)).toEqual(["Armor", "Fire"]);
+    expect(byLabel(completion, "Armor").detail).toBe("Tag case");
+    expect(
+      compileSource(doc.replace("¦", "Tag.Armor")).diagnostics.filter(
+        (diagnostic) => diagnostic.severity === "error",
+      ),
+    ).toEqual([]);
+  });
+
+  it("keeps ordinary column-before-global precedence during collection inference", () => {
+    const completion = at(
+      src(
+        "let tags: [cost]",
+        "Template: T",
+        "  ForEach: [tags] as item, i",
+        "    If: [item] == ¦",
+        "Card: C",
+        "  sheet: Cards",
+        "  Front: T",
+      ),
+      collectionSnapshot,
+    );
+    expect(labels(completion).slice(0, 2)).toEqual(["Armor", "Fire"]);
+    expect(byLabel(completion, "Blue").group).toBe(1);
+  });
+
+  it("uses a bracketed collection ref in the contains snippet", () => {
+    const completion = at(src("Template: T", "  If: ¦"), collectionSnapshot);
+    const snippet = byLabel(completion, "contains");
+    expect(snippet.insertText).toBe("contains([${1:collection}], ${2:case})");
+    const expanded = snippet.insertText
+      .replace("${1:collection}", "tags")
+      .replace("${2:case}", "Tag.Fire");
+    const source = src(
+      "Enum: Tag",
+      "  case Fire",
+      "Sheet: Cards",
+      "  column tags: Set<Tag>",
+      "Template: T",
+      `  If: ${expanded}`,
+      "    Rectangle:",
+      "      x: 0",
+      "      y: 0",
+      "      width: 1",
+      "      height: 1",
+      "      color: red",
+      "Card: C",
+      "  sheet: Cards",
+      "  size: poker",
+      "  x_units: 20",
+      "  y_units: auto",
+      "  Front: T",
+    );
+    expect(compileSource(source).diagnostics.filter((d) => d.severity === "error")).toEqual([]);
   });
 });

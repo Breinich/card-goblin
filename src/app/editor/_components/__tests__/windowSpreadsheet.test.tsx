@@ -284,6 +284,94 @@ describe("SpreadsheetContent (enum variant)", () => {
   });
 });
 
+// -- Set/List collection cells (◆55) ----------------------------------------
+
+describe("SpreadsheetContent (collection columns)", () => {
+  const schema: SchemaSnapshot = [
+    {
+      name: "Cards",
+      columns: [
+        {
+          name: "tags",
+          type: {
+            kind: "Set",
+            enumName: "Element",
+            cases: ["Fire", "Water", "Armor"],
+          },
+        },
+        {
+          name: "cost",
+          type: {
+            kind: "List",
+            enumName: "Mana",
+            cases: ["Blue", "Red", "Generic4"],
+          },
+        },
+      ],
+    },
+  ];
+  const sheets: SheetsState = {
+    Cards: {
+      rows: [
+        { tags: "Armor, Fire", cost: "Blue, Blue, Generic4" },
+        { tags: "Armor,,Mystery, Armor", cost: "" },
+      ],
+      editedRows: [true, true],
+    },
+  };
+  const diagnostics: DataDiagnostic[] = [
+    {
+      code: "D001",
+      message: "invalid Set<Element> collection",
+      cell: { sheet: "Cards", rowIndex: 1, column: "tags" },
+    },
+  ];
+  const markup = renderToStaticMarkup(
+    <SpreadsheetContent
+      schema={schema}
+      sheets={sheets}
+      dataDiagnostics={diagnostics}
+      actions={noopActions}
+    />,
+  );
+
+  it("labels collection columns and exposes one add picker per cell", () => {
+    const text = stripTags(markup);
+    expect(text).toContain("tags · Set&lt;Element&gt;");
+    expect(text).toContain("cost · List&lt;Mana&gt;");
+    expect(markup.match(/aria-label="Add item to tags"/g)).toHaveLength(2);
+    expect(markup.match(/aria-label="Add item to cost"/g)).toHaveLength(2);
+  });
+
+  it("renders valid Set chips in enum order and disables already-selected add options", () => {
+    expect(markup.indexOf(">Fire<")).toBeLessThan(markup.indexOf(">Armor<"));
+    expect(markup).toContain('aria-label="Remove Fire from tags"');
+    expect(markup).toContain('aria-label="Remove Armor from tags"');
+    expect(markup).toMatch(/<option value="Fire" disabled="">Fire<\/option>/);
+  });
+
+  it("renders List duplicates with keyboard-accessible remove and move controls", () => {
+    expect(markup).toContain('aria-label="Remove Blue at position 1 from cost"');
+    expect(markup).toContain('aria-label="Remove Blue at position 2 from cost"');
+    expect(markup).toContain('aria-label="Move Blue from position 2 to 1 in cost"');
+    expect(markup).toContain('aria-label="Move Blue from position 1 to 2 in cost"');
+    expect(markup).toContain('aria-label="Move Generic4 right from position 3 in cost"');
+    expect(markup).toMatch(
+      /aria-label="Move Generic4 right from position 3 in cost"[^>]*disabled=""/,
+    );
+  });
+
+  it("keeps every invalid raw token visible and marks the exact bad chips red", () => {
+    expect(stripTags(markup)).toContain("(empty)");
+    expect(stripTags(markup)).toContain("Mystery");
+    expect(markup).toContain('title="Invalid empty collection item"');
+    expect(markup).toContain('title="Invalid unknown collection item"');
+    expect(markup).toContain('title="Invalid duplicate collection item"');
+    expect(markup.match(/border-red-500/g)).toHaveLength(3);
+    expect(markup.match(/bg-red-950/g)).toHaveLength(4); // cell wash + three bad chips
+  });
+});
+
 // -- zero-column sheets (⚑13†) -----------------------------------------------
 
 describe("SpreadsheetContent (zero-column sheet)", () => {
