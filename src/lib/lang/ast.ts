@@ -170,7 +170,7 @@ export interface TemplateArgumentNode {
   range: Range;
 }
 
-export type ElementKind = "Rectangle" | "Text" | "TextBox" | "Icon" | "Image" | "Qr";
+export type ElementKind = "Rectangle" | "Text" | "TextBox" | "Icon" | "Image" | "Svg" | "Qr";
 
 export interface ElementNode {
   kind: "Element";

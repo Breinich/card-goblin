@@ -92,6 +92,7 @@ export type {
   RectShape,
   RenderModel,
   Shape,
+  SvgShape,
   TextAnchor,
   TextBoxLine,
   TextBoxOverflow,

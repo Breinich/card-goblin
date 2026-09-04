@@ -163,7 +163,8 @@ card, whatever size the card turns out to be.
 | `Text` | `x y size text` | `color` (black), `font` (geist), `pivot` (top_left), `rotate` (0) | one line; `size` is text height in units — see [Text & TextBox](04-text.md) |
 | `TextBox` | `x y width height text size` | `color` (black), `font` (geist), `align` (left), `line_height` (1.3), `overflow` (clip), `pivot` (top_left), `rotate` (0) | wrapped multi-line text in a box — see [Text & TextBox](04-text.md) |
 | `Icon` | `x y size code` | `color` (black), `pivot` (top_left), `style` (flat_dark), `rotate` (0) | a game glyph — see [Icons](../reference/03-icons.md) |
-| `Image` | `x y width height src` | `fit` (contain), `color` (white/unchanged), `pivot` (top_left), `rotate` (0) | your own artwork with optional multiply tint — see [Images](05-images.md) |
+| `Image` | `x y width height src` | `fit` (contain), `color` (white/unchanged), `mask` (none), `mask_radius` (0), `pivot` (top_left), `rotate` (0) | your own artwork with optional tint and mask — see [Images](05-images.md) |
+| `Svg` | `x y width height data` | `pivot` (top_left), `rotate` (0) | sanitized inline SVG artwork |
 | `Qr` | `x y size data` | `color` (black), `background` (white), `level` (m), `pivot` (top_left), `rotate` (0) | a scannable QR code — see [QR codes](06-qr-codes.md) |
 | `Repeat: N as i` | — | — | draws its children N times — see below |
 

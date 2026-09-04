@@ -415,6 +415,10 @@ const ELEMENT_SPECS: Record<ElementNode["element"], ElementSpec> = {
     required: ["x", "y", "width", "height", "src"],
     optional: ["fit", "color", "mask", "mask_radius", "pivot", "rotate"],
   },
+  Svg: {
+    required: ["x", "y", "width", "height", "data"],
+    optional: ["pivot", "rotate"],
+  },
   Qr: {
     required: ["x", "y", "size", "data"],
     optional: ["color", "background", "level", "pivot", "rotate"],

@@ -1002,6 +1002,27 @@ function evalElement(el: ElementNode, ctx: EvalContext): Shape {
         rotate: rotateOf(el, ctx), // center is (x, y) — no load-time knowledge needed
       };
     }
+    case "Svg": {
+      const raw = valueToText(evalExpr(requireProp(el, "data"), ctx, null));
+      // Keep inline SVG inert: scripts, event handlers, external references,
+      // and foreignObject are not allowed in a card asset.
+      const data = raw
+        .replace(/<script[\s\S]*?<\/script>/gi, "")
+        .replace(/\s+on[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+        .replace(/<foreignObject[\s\S]*?<\/foreignObject>/gi, "")
+        .replace(/(?:href|xlink:href)\s*=\s*("|')\s*(?:https?:|javascript:|data:)([\s\S]*?)\1/gi, "")
+        .trim();
+      return {
+        kind: "svg",
+        x: numberProp(el, "x", ctx, ctx.xUnits),
+        y: numberProp(el, "y", ctx, ctx.yUnits),
+        width: numberProp(el, "width", ctx, ctx.xUnits),
+        height: numberProp(el, "height", ctx, ctx.yUnits),
+        data,
+        pivot: pivotOf(el, ctx),
+        rotate: rotateOf(el, ctx),
+      };
+    }
     case "Qr": {
       // §7.1a: data resolves like text (Text coercions apply, same as
       // Image's src); level materializes to its default like fit/style.
