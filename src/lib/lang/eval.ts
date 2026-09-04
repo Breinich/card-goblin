@@ -46,6 +46,7 @@ import type {
   FontFace,
   IconStyle,
   ImageFit,
+  ImageMask,
   LoopCaseBinding,
   Pivot,
   QrLevel,
@@ -57,6 +58,7 @@ import {
   DEFAULT_FONT,
   DEFAULT_ICON_STYLE,
   DEFAULT_IMAGE_FIT,
+  DEFAULT_IMAGE_MASK,
   DEFAULT_LINE_HEIGHT,
   DEFAULT_PIVOT,
   DEFAULT_ROTATE,
@@ -994,6 +996,8 @@ function evalElement(el: ElementNode, ctx: EvalContext): Shape {
         src: valueToText(evalExpr(requireProp(el, "src"), ctx, null)),
         ...(carriesTint ? { color: imageColor } : {}),
         fit: fitOf(el, ctx),
+        ...(findProp(el, "mask") === null ? {} : { mask: maskOf(el, ctx) }),
+        ...(findProp(el, "mask_radius") === null ? {} : { maskRadius: numberProp(el, "mask_radius", ctx, ctx.xUnits) }),
         pivot: pivotOf(el, ctx), // §3.4: applied to the RESOLVED box at render time
         rotate: rotateOf(el, ctx), // center is (x, y) — no load-time knowledge needed
       };
@@ -1210,6 +1214,14 @@ function lineHeightOf(el: ElementNode): number {
 
 /** Image `fit:` (§3.3, M2): checker-blessed identifier or the contain
  * default — the same follow-the-resolution shape as styleOf. */
+function maskOf(el: ElementNode, ctx: EvalContext): ImageMask {
+  const expr = findProp(el, "mask");
+  if (!expr) return DEFAULT_IMAGE_MASK;
+  if (expr.kind !== "Identifier") return DEFAULT_IMAGE_MASK;
+  const res = ctx.card.resolutions.get(expr);
+  return res?.kind === "imageMask" ? res.mask : DEFAULT_IMAGE_MASK;
+}
+
 function fitOf(el: ElementNode, ctx: EvalContext): ImageFit {
   const expr = findProp(el, "fit");
   if (!expr) return DEFAULT_IMAGE_FIT;

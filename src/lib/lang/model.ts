@@ -128,6 +128,9 @@ export type ImageFit = (typeof IMAGE_FITS)[number];
 
 /** §3.3: `fit:` is optional; the default keeps the whole image visible. */
 export const DEFAULT_IMAGE_FIT: ImageFit = "contain";
+export const IMAGE_MASKS = ["none", "circle", "rounded"] as const;
+export type ImageMask = (typeof IMAGE_MASKS)[number];
+export const DEFAULT_IMAGE_MASK: ImageMask = "none";
 
 /**
  * Text/TextBox `font:` vocabulary (§3.3, M3 — ◆41): a closed set of
@@ -469,6 +472,10 @@ export interface ImageShape {
   color?: string;
   /** How the image maps onto the box (§3.3); `contain` when omitted. */
   fit: ImageFit;
+  /** Optional shape mask applied to the image box. */
+  mask?: ImageMask;
+  /** Radius used by the rounded mask, in card units. */
+  maskRadius?: number;
   /** Which point of the box x/y name (§3.4). With an `auto` dimension the
    * offset applies to the box the renderer RESOLVES at load time — the
    * square fallback box pivots on this point until the art's ratio is
