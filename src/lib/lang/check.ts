@@ -56,7 +56,7 @@ import type {
   VirtualColumnDecl,
 } from "./ast";
 import type { Diagnostic, Range, Severity } from "./diagnostics";
-import type { FontFace, IconStyle, ImageFit, Pivot, QrLevel, TextBoxOverflow } from "./model";
+import type { FontFace, IconStyle, ImageFit, Pivot, QrLevel, TextBoxOverflow, CustomFontFace } from "./model";
 import {
   FONT_FACES,
   ICON_STYLES,
@@ -148,7 +148,7 @@ export type Resolution =
     };
 
 /** AST nodes that get an entry in `CardBindings.resolutions`. */
-export type ResolvableNode = DataRef | IdentifierExpr | QualifiedName | StringRefPart;
+export type ResolvableNode = DataRef | IdentifierExpr | QualifiedName | StringRefPart | StringLit;
 
 export interface ColumnInfo {
   decl: ColumnDecl;
@@ -371,6 +371,7 @@ const IMAGE_FIT_SET: ReadonlySet<string> = new Set(IMAGE_FITS);
 /** Membership set over the §3.3 FONT_FACES vocabulary (◆41: geist + eight
  * bundled faces). */
 const FONT_FACE_SET: ReadonlySet<string> = new Set(FONT_FACES);
+const CUSTOM_FONT_URL = /^https?:\/\/[^\s"<>]+$/i;
 
 /** Membership set over the §3.3 TEXTBOX_OVERFLOWS vocabulary (clip/shrink). */
 const TEXTBOX_OVERFLOW_SET: ReadonlySet<string> = new Set(TEXTBOX_OVERFLOWS);
@@ -2229,13 +2230,19 @@ class Checker {
         // non-identifier expression is E008, not a warning.
         if (value.kind === "Error") return;
         if (value.kind === "Identifier" && FONT_FACE_SET.has(value.name)) {
-          this.recordResolution(ctx, value, {
-            kind: "font",
-            face: value.name as FontFace,
-          });
+          this.recordResolution(ctx, value, { kind: "font", face: value.name as FontFace });
           return;
         }
-        this.error("E008", `font: must be one of ${FONT_FACES.join(", ")}`, value.range);
+        // Custom references are strings so URLs and registry names remain
+        // unambiguous with the built-in identifier vocabulary.
+        if (value.kind === "String" && value.parts.length === 1 && value.parts[0]?.kind === "text") {
+          const ref = value.parts[0].value;
+          if (CUSTOM_FONT_URL.test(ref) || ref.startsWith("font:")) {
+            this.recordResolution(ctx, value, { kind: "font", face: { kind: "custom", ref } as CustomFontFace });
+            return;
+          }
+        }
+        this.error("E008", `font: must be one of ${FONT_FACES.join(", ")} or a registered font:/http(s) URL`, value.range);
         return;
       }
       case "fit": {

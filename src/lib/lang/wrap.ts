@@ -95,6 +95,9 @@ export const GEIST_METRICS: FontMetrics = {
  * strip.
  */
 export function metricsForFace(face: FontFace): FontMetrics {
+  // Custom fonts use Geist's deterministic fallback until per-font metrics can
+  // be extracted in-browser. Rendering still uses the selected font.
+  if (typeof face !== "string") return GEIST_METRICS;
   return face === "geist" ? GEIST_METRICS : FONT_METRICS[face];
 }
 

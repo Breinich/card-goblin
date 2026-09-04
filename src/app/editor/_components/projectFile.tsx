@@ -60,6 +60,7 @@ import {
   type StoredAsset,
 } from "@/app/editor/_store/assetStore";
 import { projectLifecycle } from "@/app/editor/_store/projectLifecycle";
+import { readCustomFonts, registerFont, type CustomFontRecord } from "@/app/editor/_lib/fontRegistry";
 import {
   buildProjectExport,
   IMPORT_INVALID_MESSAGE,
@@ -153,6 +154,7 @@ export async function exportEditorProject(): Promise<void> {
     editorBefore.compile?.model ?? null,
     assets,
     projectBefore?.name,
+    readCustomFonts(),
   );
   downloadJson(json, filename);
 }
@@ -161,9 +163,16 @@ export async function exportEditorProject(): Promise<void> {
  * autosave subscription persists the imported project ~1 s later (§7.1).
  * The asset library is REPLACED too (§7.1b) — empty `assets` (a v1 file)
  * clears it, matching "import replaces the whole project". */
-export function importEditorProject(seed: EditorSeed, assets: readonly StoredAsset[]): void {
+export function importEditorProject(
+  seed: EditorSeed,
+  assets: readonly StoredAsset[],
+  fonts: readonly CustomFontRecord[] = [],
+): void {
   editorStore.getState().replaceProject(seed);
   void assetStore.replaceAll(assets);
+  for (const font of fonts) {
+    try { registerFont(font); } catch { /* invalid optional font metadata is ignored */ }
+  }
 }
 
 /** Mirrors pdfExportModal's downloadPdf: blob URL + anchor click, with the
@@ -194,7 +203,7 @@ export interface ProjectFileButtonsProps {
   /** §7.1b: async (gathering asset bytes) — a rejection is caught and shown
    * inline (adversarial m7), same surface as an invalid import. */
   onExport(): void | Promise<void>;
-  onImport(seed: EditorSeed, assets: readonly StoredAsset[]): void;
+  onImport(seed: EditorSeed, assets: readonly StoredAsset[], fonts?: readonly CustomFontRecord[]): void;
   /** Test seam: render the inline error state statically. */
   initialError?: string | null;
   /** Test seam: render the armed confirm state statically. */
@@ -287,7 +296,7 @@ export function ProjectFileButtons({
           type="button"
           onClick={() => {
             setPending(null);
-            onImport(pending.seed, pending.assets);
+            onImport(pending.seed, pending.assets, pending.fonts);
           }}
           className="rounded border border-red-900 px-1.5 text-red-400 hover:border-red-500 hover:text-red-300"
         >

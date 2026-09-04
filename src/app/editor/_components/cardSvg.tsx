@@ -33,6 +33,7 @@ import {
 import type {
   DataDiagnostic,
   FontFace,
+  BuiltinFontFace,
   IconStyle,
   ImageFit,
   ImageShape,
@@ -48,6 +49,7 @@ import type {
 } from "@/lib/lang";
 import { ASSET_SRC_SCHEME, FONT_METRICS, measureText, metricsForFace, parseAssetSrc } from "@/lib/lang";
 import { assetStore, type AssetChangeEvent } from "@/app/editor/_store/assetStore";
+import { customFontFamily, installCustomFontCss } from "@/app/editor/_lib/fontRegistry";
 
 // ---------------------------------------------------------------------------
 // Font realization constants (§3.4 m10)
@@ -87,7 +89,7 @@ const TEXT_FONT_FAMILY = "var(--font-geist-sans), sans-serif";
  * scraper's family-name matching, mirrored here by textFontFamiliesUsed in
  * pdfRaster.tsx). The Record type keeps this total when a face is added.
  */
-export const TEXT_FONT_FAMILIES: Record<FontFace, string> = {
+export const TEXT_FONT_FAMILIES: Record<BuiltinFontFace, string> = {
   geist: TEXT_FONT_FAMILY,
   garamond: "CormorantGaramond-Regular",
   garamond_bold: "CormorantGaramond-Bold",
@@ -115,8 +117,12 @@ export const TEXT_FONT_FAMILIES: Record<FontFace, string> = {
  * consistency; that is a visual change to every card and is out of scope
  * here.
  */
+export function textFontFamily(font: FontFace): string {
+  return typeof font === "string" ? TEXT_FONT_FAMILIES[font] : customFontFamily(font.ref);
+}
+
 export function ascentOf(font: FontFace): number {
-  return font === "geist" ? TEXT_ASCENT : FONT_METRICS[font].ascent;
+  return typeof font !== "string" || font === "geist" ? TEXT_ASCENT : FONT_METRICS[font].ascent;
 }
 
 /**
@@ -1225,7 +1231,7 @@ function renderText(
       fontSize: shape.size,
       fill: shape.color,
       textAnchor: SVG_PIVOT_H[shape.pivot.h],
-      fontFamily: TEXT_FONT_FAMILIES[shape.font],
+      fontFamily: textFontFamily(shape.font),
       transform: rotationTransform(shape),
     } as const;
     if (!runsHaveColors(shape.runs)) {
@@ -1237,7 +1243,7 @@ function renderText(
           fontSize={shape.size}
           fill={shape.color}
           textAnchor={SVG_PIVOT_H[shape.pivot.h]}
-          fontFamily={TEXT_FONT_FAMILIES[shape.font]}
+          fontFamily={textFontFamily(shape.font)}
           transform={rotationTransform(shape)}
         >
           {runsText(shape.runs)}
@@ -1263,7 +1269,7 @@ function renderText(
       <text
         fontSize={shape.size}
         fill={shape.color}
-        fontFamily={TEXT_FONT_FAMILIES[shape.font]}
+        fontFamily={textFontFamily(shape.font)}
         xmlSpace="preserve"
       >
         {renderRunTspans(shape.runs, "", startX, emTop, shape.size, shape.font)}
@@ -1335,7 +1341,7 @@ function renderTextBox(
         fontSize={shape.size}
         fill={shape.color}
         textAnchor={SVG_ALIGN[shape.align]}
-        fontFamily={TEXT_FONT_FAMILIES[shape.font]}
+        fontFamily={textFontFamily(shape.font)}
         transform={rotationTransform(shape)}
       >
         {shape.lines.map((line, i) => (
@@ -1361,7 +1367,7 @@ function renderTextBox(
       <text
         fontSize={shape.size}
         fill={shape.color}
-        fontFamily={TEXT_FONT_FAMILIES[shape.font]}
+        fontFamily={textFontFamily(shape.font)}
         xmlSpace="preserve"
       >
         {shape.lines.flatMap((line, i) =>
@@ -1490,6 +1496,7 @@ export function CardFaceSvg({
   images,
   children,
 }: CardFaceSvgProps): ReactElement {
+  installCustomFontCss();
   // React scopes useId across sibling CardFaceSvg instances. Sanitize its
   // punctuation so the value is safe inside an unquoted SVG url(#fragment).
   const filterScope = `cg-${useId().replace(/[^A-Za-z0-9_-]/g, "_")}`;

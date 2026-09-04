@@ -72,6 +72,8 @@ export type {
   DataDiagnosticCode,
   Deck,
   FontFace,
+  BuiltinFontFace,
+  CustomFontFace,
   IconShape,
   IconStyle,
   ImageFit,

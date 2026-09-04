@@ -82,7 +82,7 @@ the section that elaborates it:
 | ◆38 | String escapes (§3.1) | `\n` (newline) and `\\` (literal backslash) are the lexer's **only** escapes besides `[[`; any other `\`-sequence is E001 | TextBox hard breaks need a way to write a newline inside a string literal; a minimal, closed escape set keeps errors loud on typos |
 | ◆39 | QR codes (§7.3) | A drawable **`Qr:` element**, not the sketched `QR(...)` call form; encoded at eval time so the shape carries the resolved module matrix, never the source data | The language has no call grammar, and custom sizes already rejected inventing one; an element reuses the practiced element pipeline (checker, evaluator, autocomplete) end to end |
 | ◆40 | Local image assets (§7.4) | **IndexedDB** (not localStorage) + an **`asset:` scheme** inside Image `src:` + a **project-file v2** that bundles asset bytes as base64 | localStorage is string-only with a small quota; IDB stores Blobs natively, and v2 keeps art traveling with the file without inventing a second file format |
-| ◆41 | Text/TextBox fonts (§3.3) | **Repo-bundled closed vocabulary**: `geist` (default, unchanged) + eight faces — Cormorant Garamond and Courier Prime, four weights/styles each — resolved like Icon `style:`, each with its own generated metrics table | A deliberate PRAGMATIC unblock, not a font system: the owner needed these two families now; per-project **uploaded** fonts are real future work, deferred because wrapping needs a metrics table per face and building that pipeline for arbitrary uploads is a bigger project than unblocking two known families |
+| ◆41 | Text/TextBox fonts (§3.3) | Built-in faces plus validated custom `font:` references (`font:name` registry records or http(s) URLs); custom faces render through local CSS `@font-face` and use Geist fallback metrics for wrapping | Custom font metrics extraction is deferred; deterministic Geist fallback keeps preview/PDF line breaks identical while allowing uploaded/link fonts now |
 | ◆42 | Row/card position bindings (§3.6) | **`[row]` and `[card]` as built-in, derived bindings** resolving after sheet columns; the grid's row gutter becomes the editable index, and typing a position **moves the row and shifts the rest** (out-of-range clamps, garbage reverts) | Position IS row order, so storing a number would create a second source of truth that can disagree with it — deriving costs nothing and keeps the sheet payload, autosave slot, and project file unchanged. Two bindings because `loop:`/`count:` make one row into several cards: `[row]` labels the data, `[card]` serialises the deck. Resolving last means a sheet declaring its own `row`/`card` column shadows the built-in, so no existing project's COLUMN can be silently reinterpreted. (Narrow exception, not a column: a template that put an unresolvable `row`/`card` name where only Number/Text/Enum ever coerced — e.g. `color: [row]` — used to poison silently to Unknown with no sheet in scope; it now resolves and can genuinely E003, which is more correct, not less.) Editing the gutter rather than adding a column keeps ⚑3 (columns come from code) intact |
 | ◆43 | Rotation (§3.4) | **`rotate:` as an optional Number property on every drawable element** — degrees, clockwise, any expression (data-driven allowed), default 0 — rotating the element **around its `pivot:` point**, which is exactly the card-space point `x`/`y` name | The pivot is the element's own handle (◆36†), so it is the one rotation center that needs no new vocabulary — `pivot: center_center` + `rotate:` spins a shape in place, the default `top_left` swings it around its corner, and `Repeat` + `rotate: [i] * step` makes fans and dials from index math (⚑9). Paint-time only: wrap, generation, caps, and PDF layout are geometry-in-card-units and never see the transform (the rasterizer serializes the same SVG markup, so PDF inherits rotation for free). An ordinary Number property needs zero new grammar — the ◆33 argument — and a non-numeric value is the usual E003, non-finite the usual D008 |
 | ◆44 | Inline icons (§7.5) | **Brace markers in resolved text**: `{CODE}` (Dicier) and `{asset:name}` (uploaded art) inside any `text:`, parsed at EVAL time AFTER interpolation; lines become **runs** with compiler-computed x-offsets; every icon occupies a square **1-em slot** (`size` × `size`); `{{` escapes a literal `{` | Braces because ◆30's "`[brackets]` always mean data refs" stays absolute — no new bracket grammar, no lexer change. Post-resolution parsing because a sheet CELL containing a marker must work (data-driven icons come free, the product's whole point). Runs because the compiler is the layout authority (◆37) and it cannot know Dicier ligature advances or an SVG's aspect ratio — absolute run placement plus a fixed slot makes the compiler's width assumption TRUE BY CONSTRUCTION for both renderers, instead of approximately right in one. True aspect ratios and non-default Dicier faces are explicitly deferred (§8) |
@@ -273,13 +273,13 @@ M3 2026-08-10). A filled box with rounded corners when radius is nonzero.
 top row. Newline characters in the resolved text render as spaces (M3 2026-08-10)
 — hard breaks belong to `TextBox`.
 
-`font:` (M3 2026-08-13, ◆41) is an optional bare identifier — `geist` (default,
-unchanged), `garamond`, `garamond_bold`, `garamond_italic`, `garamond_bold_italic`,
-`courier`, `courier_bold`, `courier_italic`, `courier_bold_italic` — resolved by
-expected type like Icon `style:` (§3.3.4); an unknown value or a non-identifier
-expression is E008 naming the vocabulary. A closed, repo-bundled set (◆41): the two
-families ship as static TTFs under `src/app/fonts/`, each face's advance widths and
-ascent generated into `font-metrics.ts` by `scripts/generate-font-metrics.mjs`.
+`font:` (M3, ◆41) accepts the built-in identifiers above, or a string custom
+reference: `"font:Display"` for a browser-local registry record, or a validated
+`http(s)` font URL. Uploaded font bytes and URL records are persisted in project
+files. Custom faces are loaded through CSS `@font-face`; TextBox wrapping uses
+Geist's deterministic fallback metrics until arbitrary-font metrics extraction is
+implemented. This may change visual line breaks for unusual fonts, but preview
+and PDF use the same fallback and therefore remain consistent.
 `TextBox` (§3.3.3) shares this same property and vocabulary.
 
 **Inline icons (M4, 2026-08-16 — ◆44, §7.5):** the resolved text may carry
@@ -1734,10 +1734,8 @@ instance, left this list for §7.2).
 
 - Auto-layout containers (`Row`/`Stack`) as sugar over `Repeat` (⚑9).
 - Inline templates under `Front:` (named Template composition shipped in ◆46).
-- Per-project UPLOADED fonts for `Text`/`TextBox` (◆41 shipped a closed,
-  repo-bundled nine-face set instead — real future work, deferred because it
-  needs a generated metrics table per uploaded face, §7.1b's asset library
-  shape but bigger).
+- Automatic per-font metrics extraction for uploaded/custom fonts (custom faces
+  currently use Geist fallback metrics for deterministic wrapping).
 - Rich-text RUNS beyond icons and scoped color — bold/italic spans inside
   `Text`/`TextBox` (◆44 shipped the run model/icons and ◆47 shipped color;
   emphasis is the remaining half of the original "rich text" item).

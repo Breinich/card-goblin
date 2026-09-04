@@ -60,6 +60,7 @@ import {
   CardFaceSvg,
   ICON_FONT_FAMILIES,
   TEXT_FONT_FAMILIES,
+  textFontFamily,
   type ResolvedImage,
   type ResolvedImages,
 } from "@/app/editor/_components/cardSvg";
@@ -288,7 +289,7 @@ export function textFontFamiliesUsed(specs: ReadonlyMap<string, FaceRasterSpec>)
   for (const spec of specs.values()) {
     for (const shape of spec.face) {
       if ((shape.kind === "text" || shape.kind === "textbox") && shape.font !== "geist") {
-        families.add(TEXT_FONT_FAMILIES[shape.font]);
+        families.add(textFontFamily(shape.font));
       }
     }
   }

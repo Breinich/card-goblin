@@ -1168,7 +1168,7 @@ function styleOf(el: ElementNode, ctx: EvalContext): IconStyle {
 function fontOf(el: ElementNode, ctx: EvalContext): FontFace {
   const expr = findProp(el, "font");
   if (!expr) return DEFAULT_FONT;
-  if (expr.kind !== "Identifier") return poisoned();
+  if (expr.kind !== "Identifier" && expr.kind !== "String") return poisoned();
   const res = ctx.card.resolutions.get(expr);
   if (res?.kind !== "font") return poisoned();
   return res.face;
