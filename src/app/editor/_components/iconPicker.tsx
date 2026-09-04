@@ -21,8 +21,7 @@ function IconPicker({ onClose }: { onClose(): void }): ReactElement {
   const [message, setMessage] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const codes = useMemo(() => [...DICIER_CODES.entries()]
-    .filter(([code, description]) => `${code} ${description}`.toLowerCase().includes(query.toLowerCase()))
-    .slice(0, 100), [query]);
+    .filter(([code, description]) => `${code} ${description}`.toLowerCase().includes(query.toLowerCase())), [query]);
   const importUrl = async (): Promise<void> => {
     try {
       if (!/^https?:\/\/[^\s"'<>]+$/i.test(url)) throw new Error("Use an http(s) icon URL.");
