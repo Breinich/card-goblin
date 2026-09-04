@@ -43,6 +43,7 @@ import {
 } from "react";
 import { buildFlagIndex } from "@/app/editor/_components/gridModel";
 import { AssetsDrawerButton } from "@/app/editor/_components/assetsDrawer";
+import { IconPickerButton } from "@/app/editor/_components/iconPicker";
 import {
   ExportDataButton,
   exportEditorData,
@@ -224,6 +225,7 @@ export function StatusBarContent({
           onNewOpenProject={onNewOpenProject}
         />
         <AssetsDrawerButton />
+        <IconPickerButton />
         <ExportDataButton disabled={cards === 0} onExport={onExportData} />
         <ProjectFileButtons
           onExport={onExportProject}

@@ -95,7 +95,10 @@ Repeat: [health] as i
 
 The complete list ships with the project at
 [`docs/vendor/dicier-v1.5.4/Dicier codes v1_5_4.txt`](../../vendor/dicier-v1.5.4/Dicier%20codes%20v1_5_4.txt).
-A browsable icon picker is on the [roadmap](../export-and-project/06-roadmap.md).
+The **Icons** button in the editor opens a searchable picker. Click a Dicier icon
+to copy its `{CODE}` marker. The picker also imports external image icons from an
+`http(s)` URL or a local file; imported icons are stored locally and used as
+`{asset:name}` markers in `Text` or `TextBox`.
 
 ## Why unknown codes only warn
 
