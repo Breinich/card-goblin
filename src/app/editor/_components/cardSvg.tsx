@@ -220,6 +220,17 @@ export function pivotedBaselineY(
  * existing (unrotated) card byte-identical. Pure and exported for the markup
  * tests.
  */
+/** SVG permits radii larger than the box, but normalizing here keeps the
+ * language's card-unit radius predictable and portable to PDF renderers. */
+export function roundedRectRadius(
+  radius: number | undefined,
+  width: number,
+  height: number,
+): number {
+  if (radius === undefined || !Number.isFinite(radius) || radius <= 0) return 0;
+  return Math.min(radius, Math.abs(width) / 2, Math.abs(height) / 2);
+}
+
 export function rotationTransform(shape: {
   x: number;
   y: number;
@@ -1139,6 +1150,7 @@ function renderShape(
     case "rect": {
       // Nine-point pivot (§3.4): x/y name the pivot point of the box.
       const origin = pivotedBoxOrigin(shape, shape);
+      const radius = roundedRectRadius(shape.radius, shape.width, shape.height);
       return (
         <rect
           key={index}
@@ -1146,6 +1158,7 @@ function renderShape(
           y={origin.y}
           width={shape.width}
           height={shape.height}
+          {...(radius === 0 ? {} : { rx: radius, ry: radius })}
           fill={shape.color}
           transform={rotationTransform(shape)}
         />

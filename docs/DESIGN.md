@@ -97,6 +97,7 @@ the section that elaborates it:
 | ◆53 | Explicit named project lifecycle (§7.8) | The editor starts behind a non-dismissible project chooser; all users can name/create/import/recover a browser project, admins can additionally create/open revisioned project-ID-scoped cloud projects, `/admin` exclusively owns authentication, and project-file v1/v2 portability remains a release-blocking compatibility contract | Multiple cloud projects cannot safely be layered onto the eager demo, one autosave key, global asset library, and fixed `projects/default` target. A bootstrap authority boundary plus immutable storage IDs prevents local recovery loss, cross-project asset leakage, and late writes landing in the wrong project |
 | ◆54 | Selective PDF export (§6.1) | PDF export opens on **All** but can switch to a transient **Custom** set of generated instances, chosen from a virtualized thumbnail grid or project-card number ranges; selection filters the immutable model before the existing layout runs | Large projects need small print runs without editing sheet rows or generation counts. Generated-instance identity handles loops/copies correctly, while reusing the layout keeps compacting, duplex pairing, preview, image pre-flight, and progress consistent by construction |
 | ◆55 | Multi-enum collections (§3.1–§3.8) | Physical columns and Template parameters may use **`Set<Enum>`** (unique, enum-ordered tags) or **`List<Enum>`** (cell-ordered, duplicates allowed); `contains(collection, case)` tests membership and contextual `ForEach: collection as item, index` renders each member | Tags and ordered cost symbols share one typed value pipeline without encoding game logic in Text; separating Set from List makes uniqueness, ordering, and duplicate semantics explicit |
+| ◆56 | Rounded rectangles (§3.3) | Rectangle accepts optional `radius:` in card units, default 0; the SVG renderer clamps it to half the shorter side and emits `rx`/`ry` | A single numeric property adds useful graphic control while preserving square-corner compatibility and keeping geometry deterministic across preview and export |
 
 ---
 
@@ -250,7 +251,7 @@ own subsection below.
 
 | Element | Properties | Summary |
 |---|---|---|
-| `Rectangle` | `x y width height color pivot rotate` | A filled box — §3.3.1. |
+| `Rectangle` | `x y width height color radius pivot rotate` | A filled box; `radius` rounds its corners — §3.3.1. |
 | `Text` | `x y size color text pivot font rotate` | One line of text — §3.3.2. |
 | `TextBox` | `x y width height text size color align line_height overflow pivot font rotate` | Wrapped, multi-line text in a box — §3.3.3. |
 | `Icon` | `x y size color code pivot style rotate` | A Dicier glyph, one of ten style faces — §3.3.4. |
@@ -260,8 +261,9 @@ own subsection below.
 
 #### 3.3.1 Rectangle
 
-`x y width height color` required; `pivot` optional (default `top_left`,
-nine-point — §3.4, M3 2026-08-10). A filled box.
+`x y width height color` required; `radius` is an optional Number in card units
+(default 0), and `pivot` is optional (default `top_left`, nine-point — §3.4,
+M3 2026-08-10). A filled box with rounded corners when radius is nonzero.
 
 #### 3.3.2 Text
 

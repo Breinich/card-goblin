@@ -387,13 +387,14 @@ interface ElementSpec {
  * defaults to flat_dark, Image fit to contain and tint to white (M2); TextBox align defaults
  * to left, line_height to 1.3 × size, overflow to clip (M3); Qr color
  * defaults to black, background to white, level to m (§7.1a); Text/TextBox
- * font defaults to geist (M3 — ◆41). EVERY drawable element takes an
- * optional nine-point `pivot:` (§3.4, M3; default top_left) and an optional
- * Number `rotate:` (§3.4, M4 — ◆43; degrees clockwise, default 0). */
+ * font defaults to geist (M3 — ◆41). Rectangle additionally accepts an
+ * optional Number `radius:` in card units (default 0). EVERY drawable element
+ * takes an optional nine-point `pivot:` (§3.4, M3; default top_left) and an
+ * optional Number `rotate:` (§3.4, M4 — ◆43; degrees clockwise, default 0). */
 const ELEMENT_SPECS: Record<ElementNode["element"], ElementSpec> = {
   Rectangle: {
     required: ["x", "y", "width", "height", "color"],
-    optional: ["pivot", "rotate"],
+    optional: ["radius", "pivot", "rotate"],
   },
   Text: {
     required: ["x", "y", "size", "text"],
@@ -2027,6 +2028,12 @@ class Checker {
       }
       case "y":
       case "size":
+        this.checkValue(value, EXP_NUMBER, ctx, true);
+        return;
+      case "radius":
+        // Radius is a length in the same card-unit space as width/height.
+        // Renderers clamp it to the rectangle's half-shorter-side so dynamic
+        // values remain safe without introducing a data diagnostic.
         this.checkValue(value, EXP_NUMBER, ctx, true);
         return;
       case "rotate":
