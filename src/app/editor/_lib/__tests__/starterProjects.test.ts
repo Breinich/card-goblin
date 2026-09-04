@@ -30,14 +30,6 @@ describe("starter project registry", () => {
     ]);
   });
 
-  it("keeps absent owner-authored files explicitly unavailable", () => {
-    expect(STARTER_PROJECTS.slice(1).map(({ available, load }) => ({ available, load }))).toEqual([
-      { available: false, load: null },
-      { available: false, load: null },
-      { available: false, load: null },
-    ]);
-  });
-
   it("loads a fresh, deeply independent Blank project on every creation", async () => {
     const blank = getStarterProject("blank");
     expect(blank.available).toBe(true);

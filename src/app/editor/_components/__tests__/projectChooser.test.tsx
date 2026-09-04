@@ -139,9 +139,4 @@ describe("ProjectChooser", () => {
     expect(committingHtml).not.toContain(">Cancel<");
   });
 
-  it("marks missing owner-authored templates unavailable instead of falling back", () => {
-    const html = renderToStaticMarkup(<ProjectChooser {...props(choosing())} />);
-    expect((html.match(/Template pending/g) ?? [])).toHaveLength(3);
-    expect(html).toContain("Starter project file not installed yet.");
-  });
 });

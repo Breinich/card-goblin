@@ -96,6 +96,12 @@ import {
 export const PROJECT_AUTOSAVE_DEBOUNCE_MS = 1000;
 export const PROJECT_ASSET_TRANSFER_CONCURRENCY = 8;
 
+/** Set NEXT_PUBLIC_CARDGOBLIN_MODE=local to run the existing editor without
+ * account checks, cloud project discovery, or remote synchronization. Local is
+ * deliberately the default; set NEXT_PUBLIC_CARDGOBLIN_MODE=cloud to opt into
+ * the existing cloud-enabled behavior. */
+export const LOCAL_ONLY_MODE = process.env.NEXT_PUBLIC_CARDGOBLIN_MODE !== "cloud";
+
 export interface ProjectOpenConflict {
   projectId: string;
   browserName: string;
@@ -950,7 +956,9 @@ export function createBrowserProjectBootstrap(
     }),
     markAutosaveDisabled: () => editorStore.setState({ autosaveDisabled: true }),
     randomUuid: () => crypto.randomUUID(),
-    probeSession: () => probeProjectSession(),
+    probeSession: () => LOCAL_ONLY_MODE
+      ? Promise.resolve("anonymous" as const)
+      : probeProjectSession(),
     listCloud: () => listNamedCloudProjects(),
     getCloud: (id) => getNamedCloudProject(id),
     createCloud: (request) => createNamedCloudProject(request),

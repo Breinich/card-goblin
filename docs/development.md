@@ -200,9 +200,10 @@ Headless browser screenshot (no driver installed; one-shot only):
 
 ## Deployment
 
-The app builds and runs with zero configuration — signed-out, fully local editing is
-the public product and needs nothing set up. A hidden, single-admin cloud mirror
-(§7.6) is retained for the operator; it is not a public account or sync offering.
+The app builds and runs with zero configuration. Development defaults to the
+local-only editor: no account or network connection is needed. To intentionally
+exercise the existing cloud mirror, set `NEXT_PUBLIC_CARDGOBLIN_MODE=cloud` and
+configure the cloud environment variables.
 See [`docs/cloud-sync.md`](cloud-sync.md) for its scope and
 [`docs/deployment.md`](deployment.md) for the runbook, plus
 [`src/lib/cloud/`](../src/lib/cloud) for the code (`r2.ts` the storage port,
