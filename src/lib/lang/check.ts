@@ -128,8 +128,9 @@ export type Resolution =
   | { kind: "align"; keyword: "left" | "middle" | "right" }
   | { kind: "iconStyle"; style: IconStyle }
   | { kind: "imageFit"; fit: ImageFit }
-  /** Text/TextBox `font:` (§3.3, M3 — ◆41): resolved by expected type like
-   * style/fit — the closed nine-face vocabulary (FONT_FACES). */
+  /** Text/TextBox `font:` (§3.3): either one bundled face token from
+   * FONT_FACES, or a string literal `asset:<name>` pointing to an uploaded
+   * font file. */
   | { kind: "font"; face: FontFace }
   /** TextBox `overflow:` (§3.3, M3): clip | shrink, resolved like fit. */
   | { kind: "overflow"; value: TextBoxOverflow }
@@ -371,6 +372,7 @@ const IMAGE_FIT_SET: ReadonlySet<string> = new Set(IMAGE_FITS);
 /** Membership set over the §3.3 FONT_FACES vocabulary (◆41: geist + eight
  * bundled faces). */
 const FONT_FACE_SET: ReadonlySet<string> = new Set(FONT_FACES);
+const IDENTIFIER_RE = /^[A-Za-z][A-Za-z0-9_]*$/;
 
 /** Membership set over the §3.3 TEXTBOX_OVERFLOWS vocabulary (clip/shrink). */
 const TEXTBOX_OVERFLOW_SET: ReadonlySet<string> = new Set(TEXTBOX_OVERFLOWS);
@@ -2215,11 +2217,9 @@ class Checker {
         return;
       }
       case "font": {
-        // Text/TextBox only (ELEMENT_SPECS): a bare identifier from the
-        // closed nine-face vocabulary, resolved by expected type exactly
-        // like Icon's style: (§3.3, M3 — ◆41). Like style (and unlike codes'
-        // open W004 list) the faces ARE the full set — unknown or a
-        // non-identifier expression is E008, not a warning.
+        // Text/TextBox only (ELEMENT_SPECS): either a bundled face token
+        // (identifier) or a string literal `asset:<name>` for an uploaded
+        // font. Uploaded names follow the §3.1 identifier shape.
         if (value.kind === "Error") return;
         if (value.kind === "Identifier" && FONT_FACE_SET.has(value.name)) {
           this.recordResolution(ctx, value, {
@@ -2228,7 +2228,17 @@ class Checker {
           });
           return;
         }
-        this.error("E008", `font: must be one of ${FONT_FACES.join(", ")}`, value.range);
+        const uploaded = this.staticText(value);
+        const uploadedName = uploaded !== null ? parseAssetSrc(uploaded) : null;
+        if (uploadedName !== null && IDENTIFIER_RE.test(uploadedName)) {
+          this.recordType(ctx, value, TEXT);
+          return;
+        }
+        this.error(
+          "E008",
+          `font: must be one of ${FONT_FACES.join(", ")} or "asset:<name>"`,
+          value.range,
+        );
         return;
       }
       case "fit": {

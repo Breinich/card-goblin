@@ -172,12 +172,23 @@ export const FONT_FACES = [
   "courier_bold_italic",
 ] as const;
 
-export type FontFace = (typeof FONT_FACES)[number];
+export type BundledFontFace = (typeof FONT_FACES)[number];
+
+/** Any `font:` value in resolved shapes: one bundled face token, or an
+ * uploaded-font reference using the same `asset:<name>` scheme as Image `src:`.
+ * Uploaded faces fall back to Geist metrics for wrapping (wrap.ts) until a
+ * per-font metrics pipeline exists. */
+export type FontFace = BundledFontFace | `${typeof ASSET_SRC_SCHEME}${string}`;
 
 /** §3.3: `font:` is optional; the default is `geist` — the language's
  * behavior before this property existed, so an omitted `font:` renders and
  * hashes identically to before (§3.3, ◆41). */
 export const DEFAULT_FONT: FontFace = "geist";
+
+/** Runtime check for the bundled closed vocabulary (FONT_FACES). */
+export function isBundledFontFace(font: string): font is BundledFontFace {
+  return (FONT_FACES as readonly string[]).includes(font);
+}
 
 /**
  * One inline icon reference parsed out of resolved text (§3.3, M4 — ◆44,
@@ -205,8 +216,8 @@ export type InlineIcon =
  * keeps legacy models/hashes byte-identical.
  */
 export type TextRun =
-  | { kind: "text"; text: string; x: number; color?: string }
-  | { kind: "icon"; x: number; icon: InlineIcon; color?: string };
+  | { kind: "text"; text: string; x: number; color?: string; bold?: true; italic?: true }
+  | { kind: "icon"; x: number; icon: InlineIcon; color?: string; bold?: true; italic?: true };
 
 /**
  * One resolved TextBox line (◆44): its runs plus the line's measured total
