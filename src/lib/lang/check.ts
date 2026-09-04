@@ -56,11 +56,12 @@ import type {
   VirtualColumnDecl,
 } from "./ast";
 import type { Diagnostic, Range, Severity } from "./diagnostics";
-import type { FontFace, IconStyle, ImageFit, Pivot, QrLevel, TextBoxOverflow, CustomFontFace } from "./model";
+import type { FontFace, IconStyle, ImageFit, ImageMask, Pivot, QrLevel, TextBoxOverflow, CustomFontFace } from "./model";
 import {
   FONT_FACES,
   ICON_STYLES,
   IMAGE_FITS,
+  IMAGE_MASKS,
   PIVOT_TOKENS,
   QR_LEVELS,
   TEXTBOX_OVERFLOWS,
@@ -128,6 +129,7 @@ export type Resolution =
   | { kind: "align"; keyword: "left" | "middle" | "right" }
   | { kind: "iconStyle"; style: IconStyle }
   | { kind: "imageFit"; fit: ImageFit }
+  | { kind: "imageMask"; mask: ImageMask }
   /** Text/TextBox `font:` (§3.3, M3 — ◆41): resolved by expected type like
    * style/fit — the closed nine-face vocabulary (FONT_FACES). */
   | { kind: "font"; face: FontFace }
@@ -411,7 +413,7 @@ const ELEMENT_SPECS: Record<ElementNode["element"], ElementSpec> = {
   },
   Image: {
     required: ["x", "y", "width", "height", "src"],
-    optional: ["fit", "color", "pivot", "rotate"],
+    optional: ["fit", "color", "mask", "mask_radius", "pivot", "rotate"],
   },
   Qr: {
     required: ["x", "y", "size", "data"],
@@ -2260,6 +2262,18 @@ class Checker {
         this.error("E008", `fit: must be one of ${IMAGE_FITS.join(", ")}`, value.range);
         return;
       }
+      case "mask": {
+        if (value.kind === "Error") return;
+        if (value.kind === "Identifier" && IMAGE_MASKS.includes(value.name as ImageMask)) {
+          this.recordResolution(ctx, value, { kind: "imageMask", mask: value.name as ImageMask });
+          return;
+        }
+        this.error("E008", `mask: must be one of ${IMAGE_MASKS.join(", ")}`, value.range);
+        return;
+      }
+      case "mask_radius":
+        this.checkValue(value, EXP_NUMBER, ctx, true);
+        return;
       case "level": {
         // Qr only (ELEMENT_SPECS): a bare identifier from the closed four-
         // level error-correction vocabulary, resolved by expected type like

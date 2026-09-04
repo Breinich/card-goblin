@@ -86,6 +86,23 @@ natural proportions. A few things to know:
 
 - Exactly **one** of the pair can be `auto` — both is an error, since nothing
   would be left to derive the ratio from.
+
+### Masks
+
+Images can be clipped to a circle or rounded rectangle after fitting:
+
+```goblin
+Image:
+  x: half
+  y: half
+  width: 10
+  height: 10
+  src: "asset:portrait"
+  mask: circle
+```
+
+Use `mask: rounded` with an optional `mask_radius:` in card units. `mask: none`
+is the default. Masking is paint-only and does not change layout.
 - The ratio is only known once the image loads, so until then (and if the load
   fails) the box shows as a **square** placeholder.
 - `fit:` does nothing next to `auto` — the box already matches the art's ratio,

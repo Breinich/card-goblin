@@ -809,7 +809,11 @@ function renderImageTag(
   // offset can only be known here, at render time, natural size in hand.
   const origin = pivotedBoxOrigin(shape, box);
   const color = effectiveImageColor(shape.color);
-  if (color === undefined) {
+  const clipId = shape.mask === undefined || shape.mask === "none" ? undefined : `${filterScope}-mask-${index}`;
+  const clip = clipId === undefined ? null : shape.mask === "circle"
+    ? <circle cx={origin.x + box.width / 2} cy={origin.y + box.height / 2} r={Math.min(box.width, box.height) / 2} />
+    : <rect x={origin.x} y={origin.y} width={box.width} height={box.height} rx={Math.min(shape.maskRadius ?? 0, box.width / 2, box.height / 2)} ry={Math.min(shape.maskRadius ?? 0, box.width / 2, box.height / 2)} />;
+  if (color === undefined && clipId === undefined) {
     return (
       <image
         key={index}
@@ -823,10 +827,27 @@ function renderImageTag(
       />
     );
   }
+  if (color === undefined) {
+    return (
+      <Fragment key={index}>
+        <defs><clipPath id={clipId}>{clip}</clipPath></defs>
+        <image
+          href={href}
+          x={origin.x}
+          y={origin.y}
+          width={box.width}
+          height={box.height}
+          preserveAspectRatio={IMAGE_PRESERVE_ASPECT[shape.fit]}
+          transform={rotationTransform(shape)}
+          clipPath={`url(#${clipId})`}
+        />
+      </Fragment>
+    );
+  }
   const filterId = `${filterScope}-image-${index}`;
   return (
     <Fragment key={index}>
-      <defs>{imageColorFilter(filterId, color)}</defs>
+      <defs>{imageColorFilter(filterId, color)}{clipId !== undefined && <clipPath id={clipId}>{clip}</clipPath>}</defs>
       <image
         href={href}
         x={origin.x}

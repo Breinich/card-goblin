@@ -98,6 +98,7 @@ the section that elaborates it:
 | ◆54 | Selective PDF export (§6.1) | PDF export opens on **All** but can switch to a transient **Custom** set of generated instances, chosen from a virtualized thumbnail grid or project-card number ranges; selection filters the immutable model before the existing layout runs | Large projects need small print runs without editing sheet rows or generation counts. Generated-instance identity handles loops/copies correctly, while reusing the layout keeps compacting, duplex pairing, preview, image pre-flight, and progress consistent by construction |
 | ◆55 | Multi-enum collections (§3.1–§3.8) | Physical columns and Template parameters may use **`Set<Enum>`** (unique, enum-ordered tags) or **`List<Enum>`** (cell-ordered, duplicates allowed); `contains(collection, case)` tests membership and contextual `ForEach: collection as item, index` renders each member | Tags and ordered cost symbols share one typed value pipeline without encoding game logic in Text; separating Set from List makes uniqueness, ordering, and duplicate semantics explicit |
 | ◆56 | Rounded rectangles (§3.3) | Rectangle accepts optional `radius:` in card units, default 0; the SVG renderer clamps it to half the shorter side and emits `rx`/`ry` | A single numeric property adds useful graphic control while preserving square-corner compatibility and keeping geometry deterministic across preview and export |
+| ◆57 | Image masks (§3.3.5) | Image accepts `mask: none\|circle\|rounded` and optional `mask_radius:`; clipping is paint-only and shared by preview/PDF | Common portrait/icon-like crops need deterministic clipping without changing the existing box/layout model |
 | ◆57 | Icon picker and imports (§7.5) | The editor provides a searchable Dicier picker and imports external icon files/URLs into the local image asset library; imported art uses `{asset:name}` markers | Reusing the existing validated asset store keeps imported icons portable and avoids a second binary storage pipeline |
 
 ---
@@ -256,7 +257,7 @@ own subsection below.
 | `Text` | `x y size color text pivot font rotate` | One line of text — §3.3.2. |
 | `TextBox` | `x y width height text size color align line_height overflow pivot font rotate` | Wrapped, multi-line text in a box — §3.3.3. |
 | `Icon` | `x y size color code pivot style rotate` | A Dicier glyph, one of ten style faces — §3.3.4. |
-| `Image` | `x y width height src fit color pivot rotate` | Raster art from a URL or uploaded asset, optionally color-multiplied — §3.3.5. |
+| `Image` | `x y width height src fit color mask mask_radius pivot rotate` | Raster art from a URL or uploaded asset, optionally tinted and masked — §3.3.5. |
 | `Qr` | `x y size data color background level pivot rotate` | A scannable QR code — §3.3.6. |
 | `Repeat` | `Repeat: <Number expr> as <var>` (single line) | Draws its children N times — §3.3.7. |
 
