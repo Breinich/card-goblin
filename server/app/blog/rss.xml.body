@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>Card Goblin — Blog</title>
+    <link>https://www.cardgoblin.com</link>
+    <description>CardGoblin turns a small script plus a spreadsheet into print-at-home cards. Design a card once, generate the whole deck, and export a true-to-size PDF — free, in your browser.</description>
+    <language>en-us</language>
+    <atom:link href="https://www.cardgoblin.com/blog/rss.xml" rel="self" type="application/rss+xml"/>
+  </channel>
+</rss>

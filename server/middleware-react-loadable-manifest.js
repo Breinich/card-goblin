@@ -1,0 +1,1 @@
+self.__REACT_LOADABLE_MANIFEST='{"app/editor/_generated/starterProjects.generated.ts -> ../../../../template_projects/poker-deck.cardgoblin.json":{"id":6325,"files":["static/chunks/325.c6f2d1d35aafec7b.js"]},"app/editor/_generated/starterProjects.generated.ts -> ../_lib/projectFileFormat":{"id":6761,"files":[]}}';
