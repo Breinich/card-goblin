@@ -813,7 +813,9 @@ function renderImageTag(
   const clipId = shape.mask === undefined || shape.mask === "none" ? undefined : `${filterScope}-mask-${index}`;
   const clip = clipId === undefined ? null : shape.mask === "circle"
     ? <circle cx={origin.x + box.width / 2} cy={origin.y + box.height / 2} r={Math.min(box.width, box.height) / 2} />
-    : <rect x={origin.x} y={origin.y} width={box.width} height={box.height} rx={Math.min(shape.maskRadius ?? 0, box.width / 2, box.height / 2)} ry={Math.min(shape.maskRadius ?? 0, box.width / 2, box.height / 2)} />;
+    : typeof shape.mask === "object" && shape.mask.kind === "icon"
+      ? <text x={origin.x + box.width / 2} y={origin.y + box.height * 0.8} textAnchor="middle" fontFamily={ICON_FONT_FAMILIES.flat_dark} fontSize={Math.min(box.width, box.height)} style={ICON_STYLE}>{shape.mask.code}</text>
+      : <rect x={origin.x} y={origin.y} width={box.width} height={box.height} rx={Math.min(shape.maskRadius ?? 0, box.width / 2, box.height / 2)} ry={Math.min(shape.maskRadius ?? 0, box.width / 2, box.height / 2)} />;
   if (color === undefined && clipId === undefined) {
     return (
       <image

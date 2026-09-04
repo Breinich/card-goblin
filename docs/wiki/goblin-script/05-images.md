@@ -101,8 +101,21 @@ Image:
   mask: circle
 ```
 
-Use `mask: rounded` with an optional `mask_radius:` in card units. `mask: none`
-is the default. Masking is paint-only and does not change layout.
+Use `mask: rounded` with an optional `mask_radius:` in card units, or use an
+icon as a clipping shape with a quoted `icon:CODE` reference:
+
+```goblin
+Image:
+  x: half
+  y: half
+  width: 12
+  height: 12
+  src: "asset:portrait"
+  mask: "icon:EAGLE"
+```
+
+`mask: none` is the default. Icon masks use the Dicier flat-dark glyph and are
+paint-only; they do not change layout.
 - The ratio is only known once the image loads, so until then (and if the load
   fails) the box shows as a **square** placeholder.
 - `fit:` does nothing next to `auto` — the box already matches the art's ratio,
