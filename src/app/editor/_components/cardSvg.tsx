@@ -42,6 +42,7 @@ import type {
   PivotV,
   QrShape,
   Shape,
+  SvgShape,
   TextAnchor,
   TextBoxShape,
   TextRun,
@@ -1145,6 +1146,22 @@ export function cardSvgPropsEqual(
 // Shape → SVG
 // ---------------------------------------------------------------------------
 
+function renderSvg(shape: SvgShape, index: number): ReactElement {
+  const origin = pivotedBoxOrigin(shape, shape);
+  return (
+    <image
+      key={index}
+      href={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(shape.data)}`}
+      x={origin.x}
+      y={origin.y}
+      width={shape.width}
+      height={shape.height}
+      preserveAspectRatio="none"
+      transform={rotationTransform(shape)}
+    />
+  );
+}
+
 function renderShape(
   shape: Shape,
   index: number,
@@ -1191,6 +1208,8 @@ function renderShape(
         />
       );
     }
+    case "svg":
+      return renderSvg(shape, index);
     case "text":
       return renderText(shape, index, filterScope, images);
     case "textbox":

@@ -575,8 +575,22 @@ export interface QrShape {
   modules: string;
 }
 
+/** Inline SVG supplied by the author. The evaluator sanitizes it before it
+ * reaches a renderer; the renderer embeds it as a data URL so preview and PDF
+ * share the same paint path. */
+export interface SvgShape {
+  kind: "svg";
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  data: string;
+  pivot: Pivot;
+  rotate: number;
+}
+
 /** In declaration order — later shapes draw on top (◆15). */
-export type Shape = RectShape | TextShape | TextBoxShape | IconShape | ImageShape | QrShape;
+export type Shape = RectShape | TextShape | TextBoxShape | IconShape | ImageShape | SvgShape | QrShape;
 
 // ---------------------------------------------------------------------------
 // Cards and decks (§3.7, §4.1)

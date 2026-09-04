@@ -488,7 +488,7 @@ describe("the shape table's rotate default matches DEFAULT_ROTATE (\u25c643)", (
   it("every drawable row lists rotate with the code's default", () => {
     const { rows } = tableWithHeader(text, "optional (default)");
     const drawables = rows.filter((cells) => !plain(cells[0]).startsWith("Repeat"));
-    expect(drawables).toHaveLength(6);
+    expect(drawables).toHaveLength(7);
     for (const cells of drawables) {
       expect(plain(cells[2] ?? ""), `${plain(cells[0])} must document rotate's default`).toContain(
         `rotate (${DEFAULT_ROTATE})`,

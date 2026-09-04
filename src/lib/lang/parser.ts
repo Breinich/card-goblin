@@ -77,6 +77,7 @@ export const BLOCK_OPENERS: ReadonlySet<string> = new Set([
   "TextBox",
   "Icon",
   "Image",
+  "Svg",
   "Qr",
   "Repeat",
   "Front",
@@ -786,6 +787,7 @@ class Parser {
         t.text === "TextBox" ||
         t.text === "Icon" ||
         t.text === "Image" ||
+        t.text === "Svg" ||
         t.text === "Qr"
       ) {
         return this.parseElement(t.text);
