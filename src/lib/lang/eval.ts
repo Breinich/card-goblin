@@ -863,6 +863,7 @@ function evalElement(el: ElementNode, ctx: EvalContext): Shape {
         width: numberProp(el, "width", ctx, ctx.xUnits),
         height: numberProp(el, "height", ctx, ctx.yUnits),
         color: colorProp(el, ctx, null), // required (§3.3) — no default
+        ...(findProp(el, "radius") === null ? {} : { radius: radiusOf(el, ctx) }),
         pivot: pivotOf(el, ctx),
         rotate: rotateOf(el, ctx),
       };
@@ -1135,6 +1136,17 @@ function pivotOf(el: ElementNode, ctx: EvalContext): Pivot {
 function rotateOf(el: ElementNode, ctx: EvalContext): number {
   const expr = findProp(el, "rotate");
   if (!expr) return DEFAULT_ROTATE;
+  const v = evalExpr(expr, ctx, null);
+  if (v.kind !== "number") return poisoned();
+  return v.value;
+}
+
+/** Rectangle `radius:` is optional and uses card units. Keep omitted radii out
+ * of the model so existing project hashes and serialized shapes remain stable;
+ * the renderer treats the absent field as zero. */
+function radiusOf(el: ElementNode, ctx: EvalContext): number {
+  const expr = findProp(el, "radius");
+  if (!expr) return 0;
   const v = evalExpr(expr, ctx, null);
   if (v.kind !== "number") return poisoned();
   return v.value;

@@ -377,6 +377,9 @@ export interface RectShape {
   height: number;
   /** CSS color string (named color lower-cased, or `#hex` as written). */
   color: string;
+  /** Optional corner radius in card units. Omitted means a square corner;
+   * renderers clamp it to half the shorter side. */
+  radius?: number;
   /** Which point of the box x/y name (§3.4); top-left when omitted. */
   pivot: Pivot;
   /** Degrees CLOCKWISE around the (x, y) pivot point (§3.4, M4 — ◆43);

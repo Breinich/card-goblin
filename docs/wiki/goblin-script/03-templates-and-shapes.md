@@ -16,6 +16,7 @@ Template: MonsterFront
     y: 0
     width: full
     height: 3
+    radius: 0.5
     color: teal
   Text: "Title"
     x: middle
@@ -158,7 +159,7 @@ card, whatever size the card turns out to be.
 
 | Shape | Required | Optional (default) | Notes |
 |---|---|---|---|
-| `Rectangle` | `x y width height color` | `pivot` (top_left), `rotate` (0) | a filled box |
+| `Rectangle` | `x y width height color` | `radius` (0), `pivot` (top_left), `rotate` (0) | a filled box; radius is in card units and is clamped to half the short side |
 | `Text` | `x y size text` | `color` (black), `font` (geist), `pivot` (top_left), `rotate` (0) | one line; `size` is text height in units — see [Text & TextBox](04-text.md) |
 | `TextBox` | `x y width height text size` | `color` (black), `font` (geist), `align` (left), `line_height` (1.3), `overflow` (clip), `pivot` (top_left), `rotate` (0) | wrapped multi-line text in a box — see [Text & TextBox](04-text.md) |
 | `Icon` | `x y size code` | `color` (black), `pivot` (top_left), `style` (flat_dark), `rotate` (0) | a game glyph — see [Icons](../reference/03-icons.md) |
