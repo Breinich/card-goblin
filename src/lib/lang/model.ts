@@ -172,12 +172,16 @@ export const FONT_FACES = [
   "courier_bold_italic",
 ] as const;
 
-export type FontFace = (typeof FONT_FACES)[number];
+export type BuiltinFontFace = (typeof FONT_FACES)[number];
+/** A registered local font name or validated http(s) font URL. Custom fonts
+ * intentionally use Geist metrics until browser font metrics extraction exists. */
+export type CustomFontFace = { kind: "custom"; ref: string };
+export type FontFace = BuiltinFontFace | CustomFontFace;
 
 /** §3.3: `font:` is optional; the default is `geist` — the language's
  * behavior before this property existed, so an omitted `font:` renders and
  * hashes identically to before (§3.3, ◆41). */
-export const DEFAULT_FONT: FontFace = "geist";
+export const DEFAULT_FONT: BuiltinFontFace = "geist";
 
 /**
  * One inline icon reference parsed out of resolved text (§3.3, M4 — ◆44,

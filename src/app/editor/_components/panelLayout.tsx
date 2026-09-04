@@ -17,6 +17,7 @@ import {
   type ParsedProjectFile,
 } from "@/app/editor/_lib/projectFileFormat";
 import { sha256Hex } from "@/app/editor/_lib/namedCloudClient";
+import { registerFont } from "@/app/editor/_lib/fontRegistry";
 import {
   STARTER_PROJECTS,
   type StarterProjectId,
@@ -193,6 +194,9 @@ export default function PanelLayout() {
         onPickImportFile={pickImportFile}
         onConfirmImport={(name) => {
           if (imported !== null) {
+            for (const font of imported.project.fonts ?? []) {
+              try { registerFont(font); } catch { /* malformed optional metadata is ignored */ }
+            }
             void bootstrap?.openImportedProject(imported.project, name, imported.sourceKey);
           }
         }}

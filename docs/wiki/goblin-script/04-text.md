@@ -253,8 +253,12 @@ marker never blanks a card.
 
 ## Fonts
 
-Both `Text` and `TextBox` take an optional `font:` — nine bundled faces, picked
-by name:
+Both `Text` and `TextBox` take an optional `font:`. In addition to the nine
+bundled faces, use `font: "font:Display"` for a local registry font or
+`font: "https://example.com/font.woff2"` for a validated web font URL. Custom
+fonts are included in project-file exports; their TextBox wrapping currently uses
+Geist fallback metrics, so preview and PDF remain consistent but unusual fonts may
+wrap differently than their native metrics.
 
 ```goblin
 Text: "Title"
@@ -277,11 +281,9 @@ Text: "Title"
 | `courier_italic` | Courier Prime — italic |
 | `courier_bold_italic` | Courier Prime — bold italic |
 
-Like `style:` on [`Icon`](../reference/03-icons.md), this is a **closed list**: an unrecognized
-value is an error, not a warning. It's a deliberately small, fixed set for
-now — two typefaces bundled with the app, not a general font-upload system —
-chosen to cover a serif and a monospace need without opening a whole asset
-pipeline. If you need a font that isn't here, that's currently out of reach.
+The built-in list remains closed and typo-checked; custom references are the
+explicit escape hatch. Add local fonts from the Assets drawer, or use a validated
+http(s) URL. Font files and records stay local and never require an account.
 
 **Wrapping is measured per font.** `TextBox` wraps by measuring each font's own
 letterforms, so the SAME text in the SAME box can break onto different lines

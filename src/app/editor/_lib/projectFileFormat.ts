@@ -25,6 +25,7 @@ import {
   sheetsToPersisted,
 } from "@/app/editor/_store/sheetsPayload";
 import { normalizeProjectName } from "@/lib/projects/projectMetadata";
+import type { CustomFontRecord } from "@/app/editor/_lib/fontRegistry";
 
 /** The current portable project-file version. Optional metadata such as
  * `name` remains a backward-compatible extension of version 2. */
@@ -50,6 +51,7 @@ interface PersistedAssetV2 {
 export interface ParsedProjectFile {
   seed: EditorSeed;
   assets: StoredAsset[];
+  fonts?: CustomFontRecord[];
   /** Valid portable display metadata. Missing or invalid names are ignored so
    * otherwise-valid legacy/hand-authored content remains recoverable. */
   name?: string;
@@ -119,6 +121,7 @@ export async function buildProjectExport(
   model: RenderModel | null,
   assets: readonly StoredAsset[] = [],
   name?: string,
+  fonts: readonly CustomFontRecord[] = [],
 ): Promise<{ filename: string; json: string }> {
   const persistedAssets: Record<string, PersistedAssetV2> = {};
   for (const asset of assets) {
@@ -134,6 +137,7 @@ export async function buildProjectExport(
     code,
     sheets: sheetsToPersisted(sheets),
     assets: persistedAssets,
+    ...(fonts.length === 0 ? {} : { fonts }),
     ...(portableName === undefined ? {} : { name: portableName }),
   };
   return { filename: projectFileName(model), json: JSON.stringify(payload) };
@@ -152,6 +156,19 @@ function parseAssetsPayload(raw: Record<string, unknown>): StoredAsset[] | null 
     assets.push({ name, mime: entry.mime, bytes });
   }
   return assets;
+}
+
+function parseFontsPayload(raw: unknown): CustomFontRecord[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((font): font is CustomFontRecord => {
+    if (!isRecord(font) || typeof font.name !== "string" || !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(font.name)) return false;
+    if (!isRecord(font.source) || typeof font.source.kind !== "string") return false;
+    return font.source.kind === "url"
+      ? typeof font.source.url === "string" && /^https?:\/\/[^\s"'<>]+$/i.test(font.source.url)
+      : font.source.kind === "file" && typeof font.source.mime === "string" &&
+        typeof font.source.dataUrl === "string" && font.source.dataUrl.startsWith("data:");
+  });
 }
 
 function parsedName(payload: Record<string, unknown>): Pick<ParsedProjectFile, "name"> {
@@ -174,7 +191,8 @@ function parseProjectFileV2(payload: Record<string, unknown>): ParsedProjectFile
   if (sheets === null) return null;
   const assets = parseAssetsPayload(payload.assets);
   if (assets === null) return null;
-  return { seed: { code: payload.code, sheets }, assets, ...parsedName(payload) };
+  const fonts = parseFontsPayload(payload.fonts);
+  return { seed: { code: payload.code, sheets }, assets, ...(fonts.length === 0 ? {} : { fonts }), ...parsedName(payload) };
 }
 
 /** Parse and validate a v1 or v2 project file. Never throws or mutates editor

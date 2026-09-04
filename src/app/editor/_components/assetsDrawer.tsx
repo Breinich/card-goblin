@@ -41,6 +41,7 @@ import {
   type StoredAsset,
 } from "@/app/editor/_store/assetStore";
 import { projectLifecycle } from "@/app/editor/_store/projectLifecycle";
+import { isFontUrl, readCustomFonts, registerFont, registerFontFile } from "@/app/editor/_lib/fontRegistry";
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for tests)
@@ -535,6 +536,8 @@ export function AssetsDrawerContent({
           </ul>
         )}
 
+        <CustomFontsPanel />
+
         <p className="mt-4 rounded border border-amber-700/60 bg-amber-950/40 px-3 py-2 text-xs leading-relaxed text-amber-200">
           {cloudBacked ? (
             <>
@@ -555,6 +558,40 @@ export function AssetsDrawerContent({
       </div>
     </div>
   );
+}
+
+function CustomFontsPanel(): ReactElement {
+  const [fonts, setFonts] = useState(readCustomFonts);
+  const [name, setName] = useState("");
+  const [url, setUrl] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const refresh = (): void => setFonts(readCustomFonts());
+  const addUrl = (): void => {
+    try {
+      if (!isFontUrl(url)) throw new Error("Use an http(s) font URL.");
+      registerFont({ name, source: { kind: "url", url } });
+      setUrl(""); setName(""); setError(null); refresh();
+    } catch (e) { setError(e instanceof Error ? e.message : "Font could not be added."); }
+  };
+  return <section className="mt-5 border-t border-gray-700 pt-4" aria-labelledby="custom-fonts-title">
+    <h3 id="custom-fonts-title" className="text-sm font-semibold text-white">Custom fonts</h3>
+    <p className="mt-1 text-xs text-gray-400">Add a font file or an http(s) URL, then use <code>font: &quot;font:name&quot;</code>.</p>
+    <div className="mt-2 flex flex-wrap gap-1.5">
+      <input aria-label="Custom font name" value={name} onChange={(e) => setName(e.currentTarget.value)} placeholder="Font name" className={FIELD_CLASS} />
+      <input aria-label="Custom font URL" value={url} onChange={(e) => setUrl(e.currentTarget.value)} placeholder="https://…" className={`${FIELD_CLASS} min-w-48`} />
+      <button type="button" disabled={!name || !url} onClick={addUrl} className={QUIET_BUTTON}>Add URL</button>
+      <button type="button" disabled={!name} onClick={() => fileRef.current?.click()} className={QUIET_BUTTON}>Upload font</button>
+      <input ref={fileRef} type="file" accept="font/*,.ttf,.otf,.woff,.woff2" className="hidden" onChange={async (e) => {
+        const file = e.currentTarget.files?.[0]; e.currentTarget.value = "";
+        if (!file) return;
+        try { await registerFontFile(name, file); setFonts(readCustomFonts()); setName(""); setError(null); }
+        catch (err) { setError(err instanceof Error ? err.message : "Font could not be added."); }
+      }} />
+    </div>
+    {error && <p role="alert" className="mt-1 text-xs text-red-400">{error}</p>}
+    {fonts.length > 0 && <ul className="mt-2 text-xs text-gray-400">{fonts.map((font) => <li key={font.name}>{font.name}</li>)}</ul>}
+  </section>;
 }
 
 // ---------------------------------------------------------------------------
