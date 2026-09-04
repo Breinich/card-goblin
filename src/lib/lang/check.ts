@@ -2268,11 +2268,16 @@ class Checker {
       }
       case "mask": {
         if (value.kind === "Error") return;
-        if (value.kind === "Identifier" && IMAGE_MASKS.includes(value.name as ImageMask)) {
+        if (value.kind === "Identifier" && (IMAGE_MASKS as readonly string[]).includes(value.name)) {
           this.recordResolution(ctx, value, { kind: "imageMask", mask: value.name as ImageMask });
           return;
         }
-        this.error("E008", `mask: must be one of ${IMAGE_MASKS.join(", ")}`, value.range);
+        const literal = literalStringValue(value);
+        if (literal !== null && /^icon:[A-Z][A-Z0-9_]*$/.test(literal)) {
+          this.recordResolution(ctx, value as ResolvableNode, { kind: "imageMask", mask: { kind: "icon", code: literal.slice(5) } });
+          return;
+        }
+        this.error("E008", `mask: must be one of ${IMAGE_MASKS.join(", ")} or an icon:<CODE> reference`, value.range);
         return;
       }
       case "mask_radius":

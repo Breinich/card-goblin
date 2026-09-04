@@ -129,7 +129,9 @@ export type ImageFit = (typeof IMAGE_FITS)[number];
 /** §3.3: `fit:` is optional; the default keeps the whole image visible. */
 export const DEFAULT_IMAGE_FIT: ImageFit = "contain";
 export const IMAGE_MASKS = ["none", "circle", "rounded"] as const;
-export type ImageMask = (typeof IMAGE_MASKS)[number];
+export type ImageMask =
+  | (typeof IMAGE_MASKS)[number]
+  | { kind: "icon"; code: string };
 export const DEFAULT_IMAGE_MASK: ImageMask = "none";
 
 /**
